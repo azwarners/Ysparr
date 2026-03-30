@@ -101,3 +101,19 @@ def test_max_age_retention(tmp_path):
 
     files = list(tmp_path.glob("*.txt"))
     assert len(files) == 0
+    
+
+def test_empty_output(tmp_path):
+    storage = TextFileStorage(tmp_path)
+
+    request = make_request("empty")
+
+    storage.initialize(request)
+    storage.finalize(request)
+
+    output_file = tmp_path / "empty.txt"
+
+    assert output_file.exists()
+
+    content = output_file.read_text()
+    assert content == ""
