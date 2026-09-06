@@ -8,7 +8,18 @@ def test_defaults() -> None:
 
 
 def test_environment_overrides() -> None:
-    assert load_config({"YSPARR_HOST": "0.0.0.0", "YSPARR_PORT": "9000"}) == Config("0.0.0.0", 9000)
+    config = load_config(
+        {
+            "YSPARR_HOST": "0.0.0.0",
+            "YSPARR_PORT": "9000",
+            "YSPARR_UPSTREAM_BASE_URL": "http://gateway:4000/",
+            "YSPARR_UPSTREAM_API_KEY": "secret",
+        }
+    )
+    assert config.host == "0.0.0.0"
+    assert config.port == 9000
+    assert config.upstream_base_url == "http://gateway:4000"
+    assert config.upstream_api_key == "secret"
 
 
 @pytest.mark.parametrize("port", [0, 65536])
@@ -20,3 +31,8 @@ def test_invalid_port(port: int) -> None:
 def test_invalid_environment_port() -> None:
     with pytest.raises(ConfigError, match="YSPARR_PORT"):
         load_config({"YSPARR_PORT": "nope"})
+
+
+def test_invalid_upstream_url() -> None:
+    with pytest.raises(ConfigError, match="upstream_base_url"):
+        Config(upstream_base_url="not-a-url")

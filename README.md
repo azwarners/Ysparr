@@ -2,18 +2,26 @@
 
 Ysparr is a standalone foundation for a durable conversational relay between OpenAI-compatible clients and AI backends. It is designed to own request lifecycle work independently from client connectivity while keeping provider integrations and application-specific behavior behind future boundaries.
 
-## Phase 0
+## Phase 1
 
-Phase 0 provides the installable package, configuration, CLI, and a small health/status HTTP service. OpenAI proxying, LiteLLM, durable jobs, persistence, and extensions are not implemented yet.
+Ysparr now provides a transparent OpenAI-compatible relay: OpenAI-compatible client -> Ysparr -> LiteLLM -> AI. Phase 1 supports model listing and streaming or non-streaming chat completions. Durable disconnect handling, persistence, jobs, reconciliation, and extensions are planned for Phase 2 and are not implemented yet.
 
 ## Development
 
-From this directory, create an environment and install the package with development dependencies:
+From this directory, create an environment and install the package with development dependencies. The checked-in `uv.lock` makes uv the intended reproducible development workflow:
 
 ```sh
-python -m venv .venv
-. .venv/bin/activate
-python -m pip install -e '.[dev]'
+uv sync --extra dev
+source .venv/bin/activate
+```
+
+Alternatively, a regular virtualenv and `python -m pip install -e '.[dev]'` are sufficient.
+
+Configure the LiteLLM gateway (the default is `http://127.0.0.1:4000`):
+
+```sh
+export YSPARR_UPSTREAM_BASE_URL=http://127.0.0.1:4000
+export YSPARR_UPSTREAM_API_KEY=your-key-if-required
 ```
 
 Start the service:
@@ -26,7 +34,20 @@ The default bind address is `127.0.0.1:8000`. Set `YSPARR_HOST` and `YSPARR_PORT
 
 ```sh
 curl http://127.0.0.1:8000/health
+curl http://127.0.0.1:8000/v1/models
 ysparr status
 ```
 
-Configuration can be validated without starting the service using `ysparr config check`.
+Point an OpenAI-compatible client at `http://127.0.0.1:8000/v1` and use the configured model. Example requests:
+
+```sh
+curl http://127.0.0.1:8000/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"your-model","messages":[{"role":"user","content":"Hello"}]}'
+
+curl http://127.0.0.1:8000/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"your-model","messages":[{"role":"user","content":"Hello"}],"stream":true}'
+```
+
+Configuration can be validated without starting the service using `ysparr config check`; it reports only whether an API key is configured, never the key itself. When `YSPARR_HOST` is `0.0.0.0` or `::`, `ysparr status` probes the corresponding local loopback address.

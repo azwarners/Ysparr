@@ -38,15 +38,27 @@ def main(argv: list[str] | None = None) -> int:
         uvicorn.run(create_app(config), host=config.host, port=config.port)
         return 0
     if args.command == "status":
+        status_host = "127.0.0.1" if config.host in {"0.0.0.0", "::"} else config.host
+        if ":" in status_host and not status_host.startswith("["):
+            status_host = f"[{status_host}]"
         try:
-            with urlopen(f"http://{config.host}:{config.port}/health", timeout=2) as response:
+            with urlopen(f"http://{status_host}:{config.port}/health", timeout=2) as response:
                 print(response.read().decode())
         except URLError as exc:
             print(f"ysparr: service unavailable: {exc.reason}")
             return 1
         return 0
     if args.command == "config" and args.config_command == "check":
-        print(json.dumps({"host": config.host, "port": config.port}))
+        print(
+            json.dumps(
+                {
+                    "host": config.host,
+                    "port": config.port,
+                    "upstream_base_url": config.upstream_base_url,
+                    "upstream_api_key_configured": bool(config.upstream_api_key),
+                }
+            )
+        )
         return 0
 
     _parser().print_help()
