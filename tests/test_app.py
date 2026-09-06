@@ -1,5 +1,4 @@
 import asyncio
-import json
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -21,11 +20,11 @@ class FakeAdapter:
         self.completed.append(request)
         return {"id": "completion-1", "object": "chat.completion", "choices": []}
 
-    async def _chunks(self) -> AsyncIterator[dict[str, Any]]:
-        yield {"id": "completion-1", "choices": [{"delta": {"content": "hello"}}]}
-        yield {"id": "completion-1", "choices": [{"delta": {"content": " world"}}]}
+    async def _chunks(self) -> AsyncIterator[bytes]:
+        yield b'data: {"id":"completion-1","choices":[{"delta":{"content":"hello"}}]}\n\n'
+        yield b'data: {"id":"completion-1","choices":[{"delta":{"content":" world"}}]}\n\n'
 
-    def stream(self, request: dict[str, Any]) -> AsyncIterator[dict[str, Any]]:
+    def stream(self, request: dict[str, Any]) -> AsyncIterator[bytes]:
         self.completed.append(request)
         return self._chunks()
 
@@ -101,6 +100,6 @@ def test_streaming_completion_relays_sse_chunks() -> None:
     )
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/event-stream")
-    assert response.text.count("data:") == 3
-    assert "[DONE]" in response.text
-    assert json.loads(response.text.split("data: ", 1)[1].split("\n", 1)[0])["id"] == "completion-1"
+    assert response.text.count("data:") == 2
+    assert "[DONE]" not in response.text
+    assert '"id":"completion-1"' in response.text

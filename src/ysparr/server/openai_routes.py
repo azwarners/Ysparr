@@ -51,8 +51,7 @@ async def chat_completions(payload: ChatCompletionRequest, request: Request):
         async def events() -> AsyncIterator[str]:
             try:
                 async for chunk in adapter.stream(upstream_request):
-                    yield f"data: {json.dumps(chunk, separators=(',', ':'))}\n\n"
-                yield "data: [DONE]\n\n"
+                    yield chunk
             except UpstreamError as exc:
                 error = {"error": {"message": str(exc), "type": "upstream_error"}}
                 yield f"data: {json.dumps(error, separators=(',', ':'))}\n\n"

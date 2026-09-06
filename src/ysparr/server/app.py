@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from ysparr import __version__
 from ysparr.config import Config
 from ysparr.server.openai_routes import router as openai_router
-from ysparr.upstream import LiteLLMAdapter, UpstreamAdapter
+from ysparr.upstream import OpenAIHTTPAdapter, UpstreamAdapter
 
 
 def create_app(config: Config | None = None, adapter: UpstreamAdapter | None = None) -> FastAPI:
@@ -13,7 +13,7 @@ def create_app(config: Config | None = None, adapter: UpstreamAdapter | None = N
 
     app = FastAPI(title="Ysparr", version=__version__)
     app.state.config = config or Config()
-    app.state.adapter = adapter or LiteLLMAdapter(app.state.config)
+    app.state.adapter = adapter or OpenAIHTTPAdapter(app.state.config)
     app.include_router(openai_router)
 
     @app.get("/health")

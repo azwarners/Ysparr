@@ -1,6 +1,6 @@
 """Replaceable upstream provider adapters."""
 
 from ysparr.upstream.base import UpstreamAdapter, UpstreamError
-from ysparr.upstream.litellm import LiteLLMAdapter
+from ysparr.upstream.http import OpenAIHTTPAdapter
 
-__all__ = ["LiteLLMAdapter", "UpstreamAdapter", "UpstreamError"]
+__all__ = ["OpenAIHTTPAdapter", "UpstreamAdapter", "UpstreamError"]
