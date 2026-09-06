@@ -1,0 +1,29 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ysparr"
+version = "0.1.0"
+description = "A standalone foundation for a durable conversational relay."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.115,<1.0",
+    "uvicorn>=0.30,<1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0,<9.0",
+]
+
+[project.scripts]
+ysparr = "ysparr.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ysparr"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
