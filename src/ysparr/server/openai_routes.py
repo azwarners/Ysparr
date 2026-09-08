@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-import json
-from collections.abc import AsyncIterator
+import asyncio
 from typing import Any
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
+from ysparr.core.jobs import JobManager
 from ysparr.upstream.base import UpstreamAdapter, UpstreamError
 
 
@@ -26,6 +26,10 @@ router = APIRouter(prefix="/v1")
 
 def _adapter(request: Request) -> UpstreamAdapter:
     return request.app.state.adapter
+
+
+def _manager(request: Request) -> JobManager:
+    return request.app.state.job_manager
 
 
 def _error(exc: UpstreamError) -> JSONResponse:
@@ -46,19 +50,21 @@ async def models(request: Request) -> JSONResponse:
 @router.post("/chat/completions")
 async def chat_completions(payload: ChatCompletionRequest, request: Request):
     upstream_request = payload.model_dump(exclude_none=True)
-    adapter = _adapter(request)
     if payload.stream:
-        async def events() -> AsyncIterator[str]:
-            try:
-                async for chunk in adapter.stream(upstream_request):
-                    yield chunk
-            except UpstreamError as exc:
-                error = {"error": {"message": str(exc), "type": "upstream_error"}}
-                yield f"data: {json.dumps(error, separators=(',', ':'))}\n\n"
-                yield "data: [DONE]\n\n"
-
-        return StreamingResponse(events(), media_type="text/event-stream")
+        job_id = await _manager(request).submit(upstream_request)
+        return StreamingResponse(_manager(request).stream(job_id), media_type="text/event-stream")
+    job_id = await _manager(request).submit(upstream_request)
     try:
-        return JSONResponse(content=await adapter.complete(upstream_request))
-    except UpstreamError as exc:
-        return _error(exc)
+        record = await _manager(request).wait(job_id)
+    except asyncio.CancelledError:
+        await _manager(request).mark_disconnected(job_id)
+        raise
+    if record.state == "failed":
+        error = UpstreamError(record.failure or "upstream execution failed", record.failure_status_code or 502)
+        await _manager(request).release(job_id)
+        return _error(error)
+    if record.state == "cancelled":
+        await _manager(request).release(job_id)
+        return _error(UpstreamError("job was cancelled", 499))
+    await _manager(request).mark_delivered(job_id)
+    return JSONResponse(content=record.response or {})

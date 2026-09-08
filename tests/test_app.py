@@ -46,42 +46,48 @@ def request(app, method: str, path: str, **kwargs) -> httpx.Response:
     return asyncio.run(run())
 
 
-def test_health_and_status_endpoints_use_http_path() -> None:
-    app = create_app(Config(), FakeAdapter())
+def _app(tmp_path, adapter):
+    return create_app(Config(database_path=str(tmp_path / "jobs.sqlite3")), adapter)
+
+
+def test_health_and_status_endpoints_use_http_path(tmp_path) -> None:
+    app = _app(tmp_path, FakeAdapter())
     assert request(app, "GET", "/health").json()["status"] == "ok"
     assert request(app, "GET", "/ysparr/v1/status").json()["service"] == "ysparr"
 
 
-def test_models_success() -> None:
-    response = request(create_app(adapter=FakeAdapter()), "GET", "/v1/models")
+def test_models_success(tmp_path) -> None:
+    response = request(_app(tmp_path, FakeAdapter()), "GET", "/v1/models")
     assert response.status_code == 200
     assert response.json()["data"][0]["id"] == "fake-model"
 
 
-def test_models_upstream_error() -> None:
-    response = request(create_app(adapter=BrokenAdapter()), "GET", "/v1/models")
+def test_models_upstream_error(tmp_path) -> None:
+    response = request(_app(tmp_path, BrokenAdapter()), "GET", "/v1/models")
     assert response.status_code == 502
     assert response.json()["error"]["type"] == "upstream_error"
     assert "Traceback" not in response.text
 
 
-def test_non_streaming_completion_forwards_and_returns_response() -> None:
+def test_non_streaming_completion_forwards_and_returns_response(tmp_path) -> None:
     adapter = FakeAdapter()
     payload = {"model": "fake-model", "messages": [{"role": "user", "content": "hi"}], "temperature": 0.2}
-    response = request(create_app(adapter=adapter), "POST", "/v1/chat/completions", json=payload)
+    app = _app(tmp_path, adapter)
+    response = request(app, "POST", "/v1/chat/completions", json=payload)
     assert response.status_code == 200
     assert response.json()["id"] == "completion-1"
     assert adapter.completed == [payload | {"stream": False}]
+    assert (request(app, "GET", "/ysparr/v1/jobs").json()["data"][0]["state"]) == "delivered"
 
 
-def test_invalid_completion_request() -> None:
-    response = request(create_app(adapter=FakeAdapter()), "POST", "/v1/chat/completions", json={"model": "x"})
+def test_invalid_completion_request(tmp_path) -> None:
+    response = request(_app(tmp_path, FakeAdapter()), "POST", "/v1/chat/completions", json={"model": "x"})
     assert response.status_code == 422
 
 
-def test_completion_upstream_error() -> None:
+def test_completion_upstream_error(tmp_path) -> None:
     response = request(
-        create_app(adapter=BrokenAdapter()),
+        _app(tmp_path, BrokenAdapter()),
         "POST",
         "/v1/chat/completions",
         json={"model": "x", "messages": [{"role": "user", "content": "hi"}]},
@@ -90,10 +96,11 @@ def test_completion_upstream_error() -> None:
     assert response.json()["error"]["message"] == "completion unavailable"
 
 
-def test_streaming_completion_relays_sse_chunks() -> None:
+def test_streaming_completion_relays_sse_chunks(tmp_path) -> None:
     adapter = FakeAdapter()
+    app = _app(tmp_path, adapter)
     response = request(
-        create_app(adapter=adapter),
+        app,
         "POST",
         "/v1/chat/completions",
         json={"model": "fake-model", "messages": [{"role": "user", "content": "hi"}], "stream": True},
@@ -103,3 +110,6 @@ def test_streaming_completion_relays_sse_chunks() -> None:
     assert response.text.count("data:") == 2
     assert "[DONE]" not in response.text
     assert '"id":"completion-1"' in response.text
+    detail = request(app, "GET", "/ysparr/v1/jobs/" + request(app, "GET", "/ysparr/v1/jobs").json()["data"][0]["id"])
+    assert detail.json()["state"] == "delivered"
+    assert detail.json()["event_count"] == 2
