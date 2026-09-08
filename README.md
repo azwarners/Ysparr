@@ -2,13 +2,13 @@
 
 **Ysparr Sends Prompts And Receives Responses.**
 
-Ysparr is lightweight middleware between OpenAI-compatible clients and OpenAI-compatible AI gateways. It gives applications a shared place to handle the request/response path instead of making every application implement its own model networking.
+Ysparr is lightweight middleware between OpenAI-compatible clients and OpenAI-compatible AI servers or gateways. It gives applications a shared place to handle the request/response path instead of making every application implement its own model networking.
 
 ```text
-Chat client -> Ysparr -> AI gateway -> model
+Chat client -> Ysparr -> OpenAI-compatible server -> model
 ```
 
-Ysparr currently acts as a transparent relay for model discovery and streaming or non-streaming chat completions. LiteLLM is the primary upstream used during development, but Ysparr talks to it through the OpenAI-compatible HTTP API rather than depending on LiteLLM itself.
+Ysparr currently acts as a transparent relay for model discovery and streaming or non-streaming chat completions. It communicates with its upstream through the OpenAI-compatible HTTP API and does not depend on a particular inference server or gateway implementation.
 
 Ysparr is designed to grow into a durable conversational relay that can keep long-running AI work alive across temporary client disconnects and let optional integrations add behavior around conversations. In the future, integrations could connect ordinary chat clients to applications such as terminal tools, agent systems, or CLI-based AI workers without requiring those applications to build their own chat interface.
 
@@ -24,15 +24,15 @@ source .venv/bin/activate
 python -m pip install -e .
 ```
 
-### 2. Configure an upstream AI gateway
+### 2. Configure an upstream OpenAI-compatible endpoint
 
-Ysparr expects an OpenAI-compatible upstream endpoint. LiteLLM running locally on its default port is one example:
+Point Ysparr at the base URL of an OpenAI-compatible AI server or gateway:
 
 ```sh
-export YSPARR_UPSTREAM_BASE_URL=http://127.0.0.1:4000
+export YSPARR_UPSTREAM_BASE_URL=http://127.0.0.1:8080
 ```
 
-If the upstream requires an API key:
+Use the host and port exposed by your upstream service. If the upstream requires an API key:
 
 ```sh
 export YSPARR_UPSTREAM_API_KEY='your-key'
@@ -59,7 +59,7 @@ curl http://127.0.0.1:8000/health
 curl http://127.0.0.1:8000/v1/models
 ```
 
-If `/v1/models` returns the models exposed by your upstream gateway, Ysparr is ready for a client.
+If `/v1/models` returns the models exposed by your upstream, Ysparr is ready for a client.
 
 ### 5. Connect a chat client
 
@@ -79,7 +79,7 @@ If your chat client runs in a container or on another machine, use the network a
 - OpenAI-compatible `POST /v1/chat/completions`
 - streaming chat completions
 - non-streaming chat completions
-- arbitrary model aliases supplied by the upstream gateway
+- arbitrary model names and aliases exposed by the upstream
 - configurable upstream URL and API key
 - configurable Ysparr bind host and port
 - transparent OpenAI-compatible HTTP forwarding through a replaceable upstream adapter
@@ -102,6 +102,8 @@ YSPARR_HOST=127.0.0.1
 YSPARR_PORT=8000
 YSPARR_UPSTREAM_BASE_URL=http://127.0.0.1:4000
 ```
+
+Set `YSPARR_UPSTREAM_BASE_URL` to the address of the OpenAI-compatible service you want Ysparr to use.
 
 Validate configuration with:
 
