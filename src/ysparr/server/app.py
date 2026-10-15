@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from ysparr import __version__
+from ysparr.apmatia import ApmatiaPublicClient
 from ysparr.config import Config
 from ysparr.core.jobs import JobManager
 from ysparr.persistence.sqlite import SQLiteJobStore
@@ -46,6 +47,11 @@ def create_app(
 
     app = FastAPI(title="Ysparr", version=__version__, lifespan=lifespan)
     app.state.config = runtime_config
+    app.state.apmatia_client = (
+        ApmatiaPublicClient(runtime_config.apmatia_public_base_url)
+        if runtime_config.apmatia_public_base_url
+        else None
+    )
     app.state.adapter = runtime_adapter
     app.state.job_store = runtime_store
     app.state.job_manager = runtime_manager

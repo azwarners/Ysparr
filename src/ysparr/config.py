@@ -33,6 +33,7 @@ class Config:
     completed_retention_seconds: int = 7 * 86400
     failed_retention_seconds: int = 86400
     orphaned_retention_seconds: int = 30 * 86400
+    apmatia_public_base_url: str | None = None
 
     def __post_init__(self) -> None:
         if not self.host.strip():
@@ -44,6 +45,10 @@ class Config:
         parsed = urlparse(self.upstream_base_url)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             raise ConfigError("upstream_base_url must be an http(s) URL")
+        if self.apmatia_public_base_url is not None:
+            public = urlparse(self.apmatia_public_base_url)
+            if public.scheme not in {"http", "https"} or not public.netloc:
+                raise ConfigError("apmatia_public_base_url must be an http(s) URL")
         if not self.database_path.strip():
             raise ConfigError("database_path must not be empty")
         for name, value in (
@@ -82,6 +87,7 @@ def load_config(environ: dict[str, str] | None = None) -> Config:
         port=port,
         upstream_base_url=upstream_base_url.rstrip("/"),
         upstream_api_key=upstream_api_key,
+        apmatia_public_base_url=(values.get("YSPARR_APMATIA_PUBLIC_BASE_URL") or "").rstrip("/") or None,
         database_path=database_path,
         completed_retention_seconds=completed_retention_seconds,
         failed_retention_seconds=failed_retention_seconds,

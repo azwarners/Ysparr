@@ -113,6 +113,7 @@ YSPARR_HOST
 YSPARR_PORT
 YSPARR_UPSTREAM_BASE_URL
 YSPARR_UPSTREAM_API_KEY
+YSPARR_APMATIA_PUBLIC_BASE_URL
 YSPARR_DATABASE_PATH
 YSPARR_RETENTION_COMPLETED
 YSPARR_RETENTION_FAILED
@@ -132,6 +133,19 @@ YSPARR_RETENTION_ORPHANED=30d
 ```
 
 Set `YSPARR_UPSTREAM_BASE_URL` to the address of the OpenAI-compatible service you want Ysparr to use.
+
+To expose explicitly published Apmatia agents as virtual OpenAI models, set
+`YSPARR_APMATIA_PUBLIC_BASE_URL` to the Apmatia server base URL (for example,
+`http://127.0.0.1:8001`). This integration is disabled by default and reads only
+Apmatia's unauthenticated, read-only `/api/public/agents` API. Agent names are
+used as model IDs so clients that ignore the model `name` field still show
+readable names. The legacy `apmatia-agent-{id}` IDs remain accepted for existing
+client settings. If Apmatia cannot be reached during discovery, Ysparr returns
+the upstream models only and does not reuse stale agent data. A completion
+selecting an agent resolves the currently published record each time and returns
+an error if it is missing or has no backing model mapping. Ysparr prepends the
+compiled agent prompt as a system message, then preserves all client messages in
+their original order.
 
 Validate configuration with:
 

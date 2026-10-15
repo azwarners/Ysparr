@@ -14,6 +14,7 @@ def test_environment_overrides() -> None:
             "YSPARR_PORT": "9000",
             "YSPARR_UPSTREAM_BASE_URL": "http://gateway:4000/",
             "YSPARR_UPSTREAM_API_KEY": "secret",
+            "YSPARR_APMATIA_PUBLIC_BASE_URL": "http://apmatia:8000/",
             "YSPARR_DATABASE_PATH": "/tmp/ysparr-test.sqlite3",
             "YSPARR_RETENTION_COMPLETED": "2h",
             "YSPARR_RETENTION_FAILED": "3d",
@@ -24,6 +25,7 @@ def test_environment_overrides() -> None:
     assert config.port == 9000
     assert config.upstream_base_url == "http://gateway:4000"
     assert config.upstream_api_key == "secret"
+    assert config.apmatia_public_base_url == "http://apmatia:8000"
     assert config.database_path == "/tmp/ysparr-test.sqlite3"
     assert config.completed_retention_seconds == 7200
     assert config.failed_retention_seconds == 259200
@@ -44,3 +46,8 @@ def test_invalid_environment_port() -> None:
 def test_invalid_upstream_url() -> None:
     with pytest.raises(ConfigError, match="upstream_base_url"):
         Config(upstream_base_url="not-a-url")
+
+
+def test_invalid_apmatia_public_url() -> None:
+    with pytest.raises(ConfigError, match="apmatia_public_base_url"):
+        Config(apmatia_public_base_url="not-a-url")
