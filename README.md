@@ -1,5 +1,22 @@
 # Ysparr
 
+## Published Apmatia agents as model-dropdown entries
+
+Ysparr can already combine models from an upstream OpenAI-compatible server with **published** Apmatia agents in `GET /v1/models`. This works with chat clients that populate their model selector through that endpoint; it does not require the chat client to implement an Apmatia-specific UI.
+
+Configure both services, then set:
+
+```sh
+export YSPARR_APMATIA_PUBLIC_BASE_URL=http://127.0.0.1:8001
+ysparr serve
+curl http://127.0.0.1:8000/v1/models
+```
+
+Use your actual Apmatia address and Ysparr port. Apmatia ships starter profiles **Mira the Software Engineer**, **Luna the Linux Admin**, **Rowan the Writer**, **Belle the General Assistant**, and **Ivy the Creative Partner**. Once installed, model-mapped and published, their names can appear alongside the upstream models. The startup bootstrap for fresh Apmatia installations may publish the starter set automatically; manual installation defaults to private unless publication is requested.
+
+When a client selects an agent, Ysparr looks up its currently published Apmatia record for that completion, chooses the configured backing model, and prepends the compiled agent system prompt before the client's existing messages. This is prompt composition, **not** automatic tool access or persistent agent memory. Legacy `apmatia-agent-{id}` selections are also accepted. An unreachable Apmatia service does not prevent upstream model discovery. See [Apmatia's starter catalog](https://github.com/azwarners/Apmatia/blob/main/docs/agents/starter-catalog.md).
+
+
 **Ysparr Sends Prompts And Receives Responses.**
 
 Ysparr is lightweight middleware between OpenAI-compatible clients and OpenAI-compatible AI servers or gateways. It gives applications a shared place to handle the request/response path instead of making every application implement its own model networking.
