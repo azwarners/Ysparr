@@ -29,6 +29,9 @@ class Config:
     port: int = 8000
     upstream_base_url: str = "http://127.0.0.1:4000"
     upstream_api_key: str | None = None
+    chat_model: str | None = None
+    coding_base_url: str | None = None
+    coding_model: str | None = None
     database_path: str = "~/.local/share/ysparr/ysparr.sqlite3"
     completed_retention_seconds: int = 7 * 86400
     failed_retention_seconds: int = 86400
@@ -45,6 +48,25 @@ class Config:
         parsed = urlparse(self.upstream_base_url)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             raise ConfigError("upstream_base_url must be an http(s) URL")
+        if (self.coding_base_url is None) != (self.coding_model is None):
+            raise ConfigError("coding_base_url and coding_model must be configured together")
+        for name, value in (("chat_model", self.chat_model), ("coding_model", self.coding_model)):
+            if value is not None and (not value.strip() or any(char.isspace() for char in value)):
+                raise ConfigError(f"{name} must be a non-empty model ID without whitespace")
+        if self.coding_base_url is not None:
+            coding = urlparse(self.coding_base_url)
+            if coding.scheme not in {"http", "https"} or not coding.netloc:
+                raise ConfigError("coding_base_url must be an http(s) URL")
+            if (
+                coding.username
+                or coding.password
+                or coding.query
+                or coding.fragment
+                or coding.path not in {"", "/", "/v1", "/v1/"}
+            ):
+                raise ConfigError("coding_base_url must be an API root URL without credentials, query, or fragment")
+            if self.chat_model == self.coding_model:
+                raise ConfigError("chat_model and coding_model must be different so clients can select each endpoint")
         if self.apmatia_public_base_url is not None:
             public = urlparse(self.apmatia_public_base_url)
             if public.scheme not in {"http", "https"} or not public.netloc:
@@ -68,6 +90,9 @@ def load_config(environ: dict[str, str] | None = None) -> Config:
     port_value = values.get("YSPARR_PORT", str(Config.port))
     upstream_base_url = values.get("YSPARR_UPSTREAM_BASE_URL", Config.upstream_base_url)
     upstream_api_key = values.get("YSPARR_UPSTREAM_API_KEY") or None
+    chat_model = values.get("YSPARR_CHAT_MODEL") or None
+    coding_base_url = values.get("YSPARR_CODING_BASE_URL") or None
+    coding_model = values.get("YSPARR_CODING_MODEL") or None
     database_path = values.get("YSPARR_DATABASE_PATH", Config.database_path)
     try:
         port = int(port_value)
@@ -87,6 +112,9 @@ def load_config(environ: dict[str, str] | None = None) -> Config:
         port=port,
         upstream_base_url=upstream_base_url.rstrip("/"),
         upstream_api_key=upstream_api_key,
+        chat_model=chat_model,
+        coding_base_url=coding_base_url.rstrip("/") if coding_base_url else None,
+        coding_model=coding_model,
         apmatia_public_base_url=(values.get("YSPARR_APMATIA_PUBLIC_BASE_URL") or "").rstrip("/") or None,
         database_path=database_path,
         completed_retention_seconds=completed_retention_seconds,

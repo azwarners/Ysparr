@@ -59,6 +59,18 @@ Use the host and port exposed by your upstream service. If the upstream requires
 export YSPARR_UPSTREAM_API_KEY='your-key'
 ```
 
+For separate selectable chat and coding targets, set all three variables below:
+
+```sh
+export YSPARR_CHAT_MODEL=chat-model-id
+export YSPARR_CODING_BASE_URL=http://127.0.0.1:8081
+export YSPARR_CODING_MODEL=coding-model-id
+```
+
+Ysparr lists the configured IDs at `/v1/models` and routes requests for the
+coding ID to the coding endpoint. Other model IDs continue to use the chat
+endpoint. The chat API key is never sent to the coding endpoint.
+
 Phase 2 durability configuration defaults are:
 
 ```text
@@ -130,6 +142,9 @@ YSPARR_HOST
 YSPARR_PORT
 YSPARR_UPSTREAM_BASE_URL
 YSPARR_UPSTREAM_API_KEY
+YSPARR_CHAT_MODEL
+YSPARR_CODING_BASE_URL
+YSPARR_CODING_MODEL
 YSPARR_APMATIA_PUBLIC_BASE_URL
 YSPARR_DATABASE_PATH
 YSPARR_RETENTION_COMPLETED
