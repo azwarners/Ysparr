@@ -6,11 +6,16 @@ import base64
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
+from pydantic import BaseModel, Field
 
 from ysparr.core.jobs import JobConflict, JobNotFound, JobManager
 
 
 router = APIRouter(prefix="/ysparr/v1")
+
+
+class OpenWebUIStopRequest(BaseModel):
+    chat_id: str = Field(min_length=1, max_length=512)
 
 
 def _manager(request: Request) -> JobManager:
@@ -53,3 +58,11 @@ async def cancel_job(request: Request, job_id: str) -> dict[str, Any]:
     except JobConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return record.summary()
+
+
+@router.post("/openwebui/cancel")
+async def cancel_openwebui_chat(
+    request: Request, form: OpenWebUIStopRequest
+) -> dict[str, Any]:
+    job_ids = await _manager(request).cancel_openwebui_chat(form.chat_id)
+    return {"status": True, "cancelled": job_ids}

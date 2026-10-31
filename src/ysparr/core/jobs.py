@@ -34,6 +34,7 @@ class _Runtime:
     disconnected: bool = False
     sse_buffer: str = ""
     content: list[str] = field(default_factory=list)
+    openwebui_chat_id: str | None = None
 
 
 def _response_content(response: dict[str, Any]) -> str | None:
@@ -85,13 +86,15 @@ class JobManager:
         )
         self._runtimes: dict[str, _Runtime] = {}
 
-    async def submit(self, request: dict[str, Any]) -> str:
+    async def submit(
+        self, request: dict[str, Any], *, openwebui_chat_id: str | None = None
+    ) -> str:
         expired = await self.store.expire(*self.retention)
         if expired:
             logger.info("jobs expired count=%s", expired)
         job_id = str(uuid.uuid4())
         await self.store.create(job_id, request)
-        runtime = _Runtime()
+        runtime = _Runtime(openwebui_chat_id=openwebui_chat_id)
         self._runtimes[job_id] = runtime
         runtime.task = asyncio.create_task(self._execute(job_id, request, runtime))
         logger.info("job accepted id=%s model=%s", job_id, request["model"])
@@ -218,6 +221,24 @@ class JobManager:
         if result is None:
             raise JobNotFound(job_id)
         return result
+
+    async def cancel_openwebui_chat(self, chat_id: str) -> list[str]:
+        """Cancel active jobs explicitly stopped from an Open WebUI chat."""
+
+        job_ids = [
+            job_id
+            for job_id, runtime in self._runtimes.items()
+            if runtime.openwebui_chat_id == chat_id
+        ]
+        cancelled: list[str] = []
+        for job_id in job_ids:
+            try:
+                await self.cancel(job_id)
+                cancelled.append(job_id)
+            except JobConflict:
+                # A generation may finish between taking the snapshot and cancelling it.
+                continue
+        return cancelled
 
     async def shutdown(self) -> None:
         tasks = [runtime.task for runtime in self._runtimes.values() if runtime.task is not None]

@@ -119,9 +119,15 @@ async def chat_completions(payload: ChatCompletionRequest, request: Request):
             *upstream_request["messages"],
         ]
     if payload.stream:
-        job_id = await _manager(request).submit(upstream_request)
+        job_id = await _manager(request).submit(
+            upstream_request,
+            openwebui_chat_id=request.headers.get("X-OpenWebUI-Chat-Id") or None,
+        )
         return StreamingResponse(_manager(request).stream(job_id), media_type="text/event-stream")
-    job_id = await _manager(request).submit(upstream_request)
+    job_id = await _manager(request).submit(
+        upstream_request,
+        openwebui_chat_id=request.headers.get("X-OpenWebUI-Chat-Id") or None,
+    )
     try:
         record = await _manager(request).wait(job_id)
     except asyncio.CancelledError:
