@@ -63,7 +63,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"ysparr: service unavailable: {exc.reason}")
             return 1
         return 0
-    if args.command == "config" and args.config_command == "check":
+    if args.command == "config" and args.config_command in {None, "check"}:
         print(
             json.dumps(
                 {

@@ -182,6 +182,12 @@ their original order.
 Validate configuration with:
 
 ```sh
+ysparr config
+```
+
+The explicit subcommand remains available as an equivalent form:
+
+```sh
 ysparr config check
 ```
 
