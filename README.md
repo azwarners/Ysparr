@@ -179,6 +179,13 @@ an error if it is missing or has no backing model mapping. Ysparr prepends the
 compiled agent prompt as a system message, then preserves all client messages in
 their original order.
 
+CLI help is available at both levels:
+
+```sh
+ysparr --help
+ysparr config --help
+```
+
 Validate configuration with:
 
 ```sh

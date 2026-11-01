@@ -21,8 +21,15 @@ def _parser() -> argparse.ArgumentParser:
 
     commands.add_parser("serve", help="start the HTTP service")
     commands.add_parser("status", help="check the local service health endpoint")
-    config = commands.add_parser("config", help="inspect configuration")
-    config.add_subparsers(dest="config_command").add_parser("check", help="validate configuration")
+    config = commands.add_parser(
+        "config",
+        help="show settings and validate them (default action: check)",
+        description="Show effective settings. Running 'ysparr config' is equivalent to 'ysparr config check'.",
+        epilog="Use 'ysparr config check' to state the action explicitly.",
+    )
+    config.add_subparsers(dest="config_command", metavar="ACTION").add_parser(
+        "check", help="validate configuration"
+    )
     commands.add_parser("jobs", help="list durable jobs")
     job = commands.add_parser("job", help="inspect or cancel a durable job")
     job_commands = job.add_subparsers(dest="job_command")
