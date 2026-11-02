@@ -23,6 +23,7 @@ class JobRecord:
     failure: str | None
     failure_status_code: int | None
     events: tuple[str, ...] = ()
+    principal_id: str | None = None
 
     def summary(self) -> dict[str, Any]:
         return {
@@ -41,7 +42,7 @@ class JobRecord:
 
 
 class JobStore(Protocol):
-    async def create(self, job_id: str, request: dict[str, Any]) -> JobRecord: ...
+    async def create(self, job_id: str, request: dict[str, Any], principal_id: str | None = None) -> JobRecord: ...
 
     async def mark_running(self, job_id: str) -> None: ...
 

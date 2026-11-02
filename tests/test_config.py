@@ -11,6 +11,7 @@ def test_environment_overrides() -> None:
     config = load_config(
         {
             "YSPARR_HOST": "0.0.0.0",
+            "YSPARR_AUTH_ENABLED": "true",
             "YSPARR_PORT": "9000",
             "YSPARR_UPSTREAM_BASE_URL": "http://gateway:4000/",
             "YSPARR_UPSTREAM_API_KEY": "secret",

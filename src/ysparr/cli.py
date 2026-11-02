@@ -12,6 +12,7 @@ import uvicorn
 from ysparr import __version__
 from ysparr.config import ConfigError, load_config
 from ysparr.server.app import create_app
+from ysparr.security import IdentityStore
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -31,6 +32,33 @@ def _parser() -> argparse.ArgumentParser:
         "check", help="validate configuration"
     )
     commands.add_parser("jobs", help="list durable jobs")
+    users = commands.add_parser("user", help="manage local API principals")
+    user_commands = users.add_subparsers(dest="user_command")
+    create_user = user_commands.add_parser("create", help="create a local user")
+    create_user.add_argument("name")
+    keys = commands.add_parser("key", help="manage client API keys")
+    key_commands = keys.add_subparsers(dest="key_command")
+    create_key = key_commands.add_parser("create", help="issue an API key")
+    create_key.add_argument("user")
+    create_key.add_argument("label")
+    create_key.add_argument("--models", default="*", help="comma-separated model IDs or *")
+    create_policy = create_key.add_mutually_exclusive_group()
+    create_policy.add_argument("--public", action="store_true", help="restrict this key to chat only")
+    create_policy.add_argument("--capabilities", help="comma-separated capabilities: chat,jobs:read,jobs:cancel")
+    create_key.add_argument("--admin", action="store_true", help="grant administrative privileges")
+    list_keys = key_commands.add_parser("list", help="list key metadata")
+    list_keys.add_argument("--user")
+    policy = key_commands.add_parser("policy", help="modify a key's model and capability policy")
+    policy.add_argument("id")
+    policy.add_argument("--models", help="comma-separated model IDs or *")
+    policy_options = policy.add_mutually_exclusive_group()
+    policy_options.add_argument("--public", action="store_true", help="set chat-only capabilities")
+    policy_options.add_argument("--capabilities", help="comma-separated capabilities: chat,jobs:read,jobs:cancel")
+    for action in ("enable", "disable", "revoke", "rotate"):
+        command = key_commands.add_parser(action, help=f"{action} an API key")
+        command.add_argument("id")
+        if action == "rotate":
+            command.add_argument("--label")
     job = commands.add_parser("job", help="inspect or cancel a durable job")
     job_commands = job.add_subparsers(dest="job_command")
     show = job_commands.add_parser("show", help="show a durable job")
@@ -46,7 +74,8 @@ def _status_host(config) -> str:
 
 
 def _admin_request(config, path: str, method: str = "GET") -> dict:
-    request = Request(f"http://{_status_host(config)}:{config.port}{path}", method=method)
+    headers = {"Authorization": f"Bearer {config.admin_api_key}"} if config.admin_api_key else {}
+    request = Request(f"http://{_status_host(config)}:{config.port}{path}", method=method, headers=headers)
     with urlopen(request, timeout=2) as response:
         return json.loads(response.read().decode())
 
@@ -61,6 +90,52 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "serve":
         uvicorn.run(create_app(config), host=config.host, port=config.port)
+        return 0
+    if args.command == "user" and args.user_command == "create":
+        try:
+            user_id = IdentityStore(config.database_path).create_user(args.name)
+        except Exception as exc:
+            print(f"ysparr: unable to create user: {exc}")
+            return 1
+        print(json.dumps({"id": user_id, "name": args.name}))
+        return 0
+    if args.command == "key" and args.key_command:
+        identities = IdentityStore(config.database_path)
+        try:
+            if args.key_command == "create":
+                if args.public:
+                    capabilities = ("chat",)
+                elif args.capabilities is not None:
+                    capabilities = tuple(item for item in args.capabilities.split(",") if item)
+                else:
+                    capabilities = ("chat", "jobs:read", "jobs:cancel")
+                secret, key_id = identities.create_key(args.user, args.label, tuple(x for x in args.models.split(",") if x), capabilities, args.admin)
+                print(json.dumps({"id": key_id, "key": secret, "warning": "Save this key now; it is shown only once."}))
+            elif args.key_command == "list":
+                print(json.dumps(identities.list_keys(args.user)))
+            elif args.key_command == "policy":
+                capabilities = None
+                if args.public:
+                    capabilities = ("chat",)
+                elif args.capabilities is not None:
+                    capabilities = tuple(item for item in args.capabilities.split(",") if item)
+                models = tuple(item for item in args.models.split(",") if item) if args.models is not None else None
+                identities.update_policy(args.id, models=models, capabilities=capabilities)
+                metadata = next(key for key in identities.list_keys() if key["id"] == args.id)
+                print(json.dumps({"id": args.id, "models": metadata["models"].splitlines(), "capabilities": metadata["capabilities"].splitlines()}))
+            elif args.key_command == "rotate":
+                old = next((key for key in identities.list_keys() if key["id"] == args.id), None)
+                if old is None:
+                    raise ValueError("unknown key")
+                secret, key_id = identities.create_key(old["name"], args.label or old["label"], tuple(old["models"].splitlines()), tuple(old["capabilities"].splitlines()), bool(old["admin"]))
+                identities.set_key(args.id, "revoke")
+                print(json.dumps({"id": key_id, "key": secret, "revoked": args.id, "warning": "Save this replacement key now; it is shown only once."}))
+            else:
+                identities.set_key(args.id, args.key_command)
+                print(json.dumps({"id": args.id, "status": args.key_command}))
+        except Exception as exc:
+            print(f"ysparr: unable to manage key: {exc}")
+            return 1
         return 0
     if args.command == "status":
         try:

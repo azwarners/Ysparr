@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -17,6 +17,7 @@ from ysparr.apmatia import (
     virtual_model_id,
 )
 from ysparr.core.jobs import JobManager
+from ysparr.security import Principal, principal_for_request, require_capability
 from ysparr.upstream.base import UpstreamAdapter, UpstreamError
 
 
@@ -47,7 +48,9 @@ def _error(exc: UpstreamError) -> JSONResponse:
 
 
 @router.get("/models")
-async def models(request: Request) -> JSONResponse:
+async def models(
+    request: Request, principal: Principal | None = Depends(principal_for_request)
+) -> JSONResponse:
     try:
         result = await _adapter(request).list_models()
     except UpstreamError as exc:
@@ -66,11 +69,26 @@ async def models(request: Request) -> JSONResponse:
                 result["data"].append(
                     {"id": model_id, "object": "model", "owned_by": "apmatia"}
                 )
+    if principal is not None:
+        result["data"] = [
+            model for model in result.get("data", [])
+            if isinstance(model, dict) and principal.allows_model(str(model.get("id", "")))
+        ]
     return JSONResponse(content=result)
 
 
 @router.post("/chat/completions")
-async def chat_completions(payload: ChatCompletionRequest, request: Request):
+async def chat_completions(
+    payload: ChatCompletionRequest,
+    request: Request,
+    principal: Principal | None = Depends(principal_for_request),
+):
+    require_capability(principal, "chat")
+    if principal is not None and not principal.allows_model(payload.model):
+        return JSONResponse(
+            status_code=403,
+            content={"error": {"message": "model is not permitted for this key", "type": "permission_error"}},
+        )
     upstream_request = payload.model_dump(exclude_none=True)
     client = getattr(request.app.state, "apmatia_client", None)
     agent = None
@@ -122,11 +140,13 @@ async def chat_completions(payload: ChatCompletionRequest, request: Request):
         job_id = await _manager(request).submit(
             upstream_request,
             openwebui_chat_id=request.headers.get("X-OpenWebUI-Chat-Id") or None,
+            principal_id=principal.id if principal else None,
         )
         return StreamingResponse(_manager(request).stream(job_id), media_type="text/event-stream")
     job_id = await _manager(request).submit(
         upstream_request,
         openwebui_chat_id=request.headers.get("X-OpenWebUI-Chat-Id") or None,
+        principal_id=principal.id if principal else None,
     )
     try:
         record = await _manager(request).wait(job_id)

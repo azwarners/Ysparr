@@ -37,10 +37,14 @@ class Config:
     failed_retention_seconds: int = 86400
     orphaned_retention_seconds: int = 30 * 86400
     apmatia_public_base_url: str | None = None
+    auth_enabled: bool = False
+    admin_api_key: str | None = None
 
     def __post_init__(self) -> None:
         if not self.host.strip():
             raise ConfigError("host must not be empty")
+        if self.host not in {"127.0.0.1", "::1", "localhost"} and not self.auth_enabled:
+            raise ConfigError("non-localhost binding requires YSPARR_AUTH_ENABLED=true")
         if not isinstance(self.port, int) or isinstance(self.port, bool):
             raise ConfigError("port must be an integer")
         if not 1 <= self.port <= 65535:
@@ -116,6 +120,8 @@ def load_config(environ: dict[str, str] | None = None) -> Config:
         coding_base_url=coding_base_url.rstrip("/") if coding_base_url else None,
         coding_model=coding_model,
         apmatia_public_base_url=(values.get("YSPARR_APMATIA_PUBLIC_BASE_URL") or "").rstrip("/") or None,
+        auth_enabled=values.get("YSPARR_AUTH_ENABLED", "false").lower() in {"1", "true", "yes", "on"},
+        admin_api_key=values.get("YSPARR_ADMIN_API_KEY") or None,
         database_path=database_path,
         completed_retention_seconds=completed_retention_seconds,
         failed_retention_seconds=failed_retention_seconds,

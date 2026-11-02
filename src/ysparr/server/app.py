@@ -12,6 +12,7 @@ from ysparr.persistence.sqlite import SQLiteJobStore
 from ysparr.persistence.store import JobStore
 from ysparr.server.admin_routes import router as admin_router
 from ysparr.server.openai_routes import router as openai_router
+from ysparr.security import IdentityStore
 from ysparr.upstream import OpenAIHTTPAdapter, UpstreamAdapter
 
 
@@ -72,6 +73,7 @@ def create_app(
     runtime_config = config or Config()
     runtime_adapter = adapter or RoutedUpstreamAdapter(runtime_config)
     runtime_store = store or SQLiteJobStore(runtime_config.database_path)
+    identity_store = IdentityStore(runtime_config.database_path)
     runtime_manager = JobManager(
         runtime_store,
         runtime_adapter,
@@ -101,6 +103,7 @@ def create_app(
     )
     app.state.adapter = runtime_adapter
     app.state.job_store = runtime_store
+    app.state.identity_store = identity_store
     app.state.job_manager = runtime_manager
     app.include_router(openai_router)
     app.include_router(admin_router)

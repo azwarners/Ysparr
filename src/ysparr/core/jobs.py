@@ -87,13 +87,13 @@ class JobManager:
         self._runtimes: dict[str, _Runtime] = {}
 
     async def submit(
-        self, request: dict[str, Any], *, openwebui_chat_id: str | None = None
+        self, request: dict[str, Any], *, openwebui_chat_id: str | None = None, principal_id: str | None = None
     ) -> str:
         expired = await self.store.expire(*self.retention)
         if expired:
             logger.info("jobs expired count=%s", expired)
         job_id = str(uuid.uuid4())
-        await self.store.create(job_id, request)
+        await self.store.create(job_id, request, principal_id)
         runtime = _Runtime(openwebui_chat_id=openwebui_chat_id)
         self._runtimes[job_id] = runtime
         runtime.task = asyncio.create_task(self._execute(job_id, request, runtime))

@@ -39,6 +39,7 @@ def _record(row: sqlite3.Row, events: tuple[str, ...] = ()) -> JobRecord:
         failure=row["failure"],
         failure_status_code=row["failure_status_code"],
         events=events,
+        principal_id=row["principal_id"] if "principal_id" in row.keys() else None,
     )
 
 
@@ -89,6 +90,9 @@ class SQLiteJobStore:
                 );
                 """
             )
+            columns = {row["name"] for row in self._connection.execute("PRAGMA table_info(jobs)")}
+            if "principal_id" not in columns:
+                self._connection.execute("ALTER TABLE jobs ADD COLUMN principal_id TEXT")
             self._connection.execute(
                 """
                 UPDATE jobs
@@ -108,20 +112,20 @@ class SQLiteJobStore:
     async def _run(self, function: Callable[..., T], *args: Any, **kwargs: Any) -> T:
         return await asyncio.to_thread(self._call, function, *args, **kwargs)
 
-    def _create(self, job_id: str, request: dict[str, Any]) -> JobRecord:
+    def _create(self, job_id: str, request: dict[str, Any], principal_id: str | None = None) -> JobRecord:
         timestamp = _now()
         with self._connection:
             self._connection.execute(
                 """
-                INSERT INTO jobs(id, created_at, updated_at, state, model, request_json)
-                VALUES (?, ?, ?, 'accepted', ?, ?)
+                INSERT INTO jobs(id, created_at, updated_at, state, model, request_json, principal_id)
+                VALUES (?, ?, ?, 'accepted', ?, ?, ?)
                 """,
-                (job_id, timestamp, timestamp, request["model"], json.dumps(request)),
+                (job_id, timestamp, timestamp, request["model"], json.dumps(request), principal_id),
             )
         return self._get(job_id)
 
-    async def create(self, job_id: str, request: dict[str, Any]) -> JobRecord:
-        return await self._run(self._create, job_id, request)
+    async def create(self, job_id: str, request: dict[str, Any], principal_id: str | None = None) -> JobRecord:
+        return await self._run(self._create, job_id, request, principal_id)
 
     def _simple_update(self, job_id: str, state: str, **values: Any) -> None:
         assignments = ["state = ?", "updated_at = ?"]

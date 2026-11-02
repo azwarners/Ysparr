@@ -117,6 +117,38 @@ Examples of chat applications in this general category include Open WebUI, Libre
 
 If your chat client runs in a container or on another machine, use the network address of the machine running Ysparr instead of `127.0.0.1`. To listen beyond localhost, set `YSPARR_HOST` appropriately before starting the service.
 
+### Secure LAN access
+
+Ysparr keeps its no-key localhost behavior for existing installations. Binding to a non-loopback address now requires `YSPARR_AUTH_ENABLED=true`; all `/v1/*` and `/ysparr/v1/*` routes then require a Ysparr client bearer key. Keep the service on localhost behind a TLS reverse proxy, or terminate TLS at a trusted gateway and restrict firewall access to trusted clients. Do not expose plain HTTP over an untrusted network.
+
+Create a principal and an ordinary scoped key locally:
+
+```sh
+ysparr user create nick
+ysparr key create nick workstation --models chat-model-id,public-starter-name
+```
+
+The key is printed once. Ysparr stores only a scrypt hash and a short fingerprint. `ysparr key list` shows metadata only; `ysparr key disable ID`, `enable ID`, `revoke ID`, and `rotate ID` take effect immediately. `ysparr key create USER LABEL --models model-a,StarterName` creates a key restricted to those model IDs. Its allowlist is enforced in `/v1/models` and at completion time, including guessed Apmatia IDs. Only currently published Apmatia agents can be resolved, and an agent must also be explicitly included in the key's model allowlist. `--public` creates a chat-only key with no job inspection or cancellation access. `--admin` grants a key administrative access to retained jobs, including historical jobs without an owner.
+
+Update a key's policy without rotating its secret or restarting Ysparr:
+
+```sh
+ysparr key policy KEY_ID --models chat-model-id,public-starter-name --public
+ysparr key policy KEY_ID --capabilities chat,jobs:read
+```
+
+Use either `--models` or `--capabilities` (or both) to update only the specified parts. Supported capabilities are `chat`, `jobs:read`, and `jobs:cancel`; an empty capability list denies all ordinary capabilities. Administrative privilege remains a separate setting.
+
+Enable authenticated operation with:
+
+```sh
+export YSPARR_AUTH_ENABLED=true
+export YSPARR_HOST=0.0.0.0
+ysparr serve
+```
+
+Ordinary API keys can access only their own retained jobs when granted `jobs:read` or `jobs:cancel`; keys made with `--public` receive neither capability. Health endpoints remain available for local monitoring. Local key administration uses the SQLite database directly and requires no running service. For the legacy job CLI over an authenticated service, set `YSPARR_ADMIN_API_KEY` to an administrative bearer key in the shell environment. Client keys are separate from `YSPARR_UPSTREAM_API_KEY`, which is only sent to the configured upstream.
+
 ## What works today
 
 - OpenAI-compatible `GET /v1/models`
@@ -146,6 +178,8 @@ YSPARR_CHAT_MODEL
 YSPARR_CODING_BASE_URL
 YSPARR_CODING_MODEL
 YSPARR_APMATIA_PUBLIC_BASE_URL
+YSPARR_AUTH_ENABLED
+YSPARR_ADMIN_API_KEY
 YSPARR_DATABASE_PATH
 YSPARR_RETENTION_COMPLETED
 YSPARR_RETENTION_FAILED
@@ -162,6 +196,7 @@ YSPARR_DATABASE_PATH=~/.local/share/ysparr/ysparr.sqlite3
 YSPARR_RETENTION_COMPLETED=7d
 YSPARR_RETENTION_FAILED=24h
 YSPARR_RETENTION_ORPHANED=30d
+YSPARR_AUTH_ENABLED=false
 ```
 
 Set `YSPARR_UPSTREAM_BASE_URL` to the address of the OpenAI-compatible service you want Ysparr to use.
