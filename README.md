@@ -1,20 +1,27 @@
 # Ysparr
 
-## Published Apmatia agents as model-dropdown entries
+## Versioned external extensions
 
-Ysparr can already combine models from an upstream OpenAI-compatible server with **published** Apmatia agents in `GET /v1/models`. This works with chat clients that populate their model selector through that endpoint; it does not require the chat client to implement an Apmatia-specific UI.
+Ysparr can combine upstream models with entries contributed by an operator-approved
+external extension. The extension receives a read-only request view and returns
+additive role-aware contributions plus target metadata; Ysparr keeps routing,
+durability, and streaming ownership.
 
 Configure both services, then set:
 
 ```sh
-export YSPARR_APMATIA_PUBLIC_BASE_URL=http://127.0.0.1:8001
+export YSPARR_EXTENSION_BASE_URLS=http://127.0.0.1:8001
 ysparr serve
 curl http://127.0.0.1:8000/v1/models
 ```
 
 Use your actual Apmatia address and Ysparr port. Apmatia ships starter profiles **Mira the Software Engineer**, **Luna the Linux Admin**, **Rowan the Writer**, **Belle the General Assistant**, and **Ivy the Creative Partner**. Once installed, model-mapped and published, their names can appear alongside the upstream models. The startup bootstrap for fresh Apmatia installations may publish the starter set automatically; manual installation defaults to private unless publication is requested.
 
-When a client selects an agent, Ysparr looks up its currently published Apmatia record for that completion, chooses the configured backing model, and prepends the compiled agent system prompt before the client's existing messages. This is prompt composition, **not** automatic tool access or persistent agent memory. Legacy `apmatia-agent-{id}` selections are also accepted. An unreachable Apmatia service does not prevent upstream model discovery. See [Apmatia's starter catalog](https://github.com/azwarners/Apmatia/blob/main/docs/agents/starter-catalog.md).
+When the Apmatia extension is selected, it contributes the compiled system
+instruction and a preferred model type. It does not expose private agent data,
+edit client messages, or choose an inference backend. Legacy
+`apmatia-agent-{id}` selectors remain accepted. Add `YSPARR_EXTENSION_API_KEY`
+when the extension requires bearer authentication.
 
 
 **Ysparr Sends Prompts And Receives Responses.**
@@ -177,7 +184,9 @@ YSPARR_UPSTREAM_API_KEY
 YSPARR_CHAT_MODEL
 YSPARR_CODING_BASE_URL
 YSPARR_CODING_MODEL
-YSPARR_APMATIA_PUBLIC_BASE_URL
+YSPARR_EXTENSION_BASE_URLS
+YSPARR_MODEL_TYPE_ROUTES
+YSPARR_EXTENSION_API_KEY
 YSPARR_AUTH_ENABLED
 YSPARR_ADMIN_API_KEY
 YSPARR_DATABASE_PATH
@@ -202,17 +211,17 @@ YSPARR_AUTH_ENABLED=false
 Set `YSPARR_UPSTREAM_BASE_URL` to the address of the OpenAI-compatible service you want Ysparr to use.
 
 To expose explicitly published Apmatia agents as virtual OpenAI models, set
-`YSPARR_APMATIA_PUBLIC_BASE_URL` to the Apmatia server base URL (for example,
-`http://127.0.0.1:8001`). This integration is disabled by default and reads only
-Apmatia's unauthenticated, read-only `/api/public/agents` API. Agent names are
-used as model IDs so clients that ignore the model `name` field still show
-readable names. The legacy `apmatia-agent-{id}` IDs remain accepted for existing
-client settings. If Apmatia cannot be reached during discovery, Ysparr returns
-the upstream models only and does not reuse stale agent data. A completion
-selecting an agent resolves the currently published record each time and returns
-an error if it is missing or has no backing model mapping. Ysparr prepends the
-compiled agent prompt as a system message, then preserves all client messages in
-their original order.
+`YSPARR_EXTENSION_BASE_URLS` to one or more extension base URLs (comma-separated).
+Ysparr reads the versioned, read-only catalog and resolves the selected entry at
+request time. Agent names are used as model IDs; legacy `apmatia-agent-{id}` IDs
+remain accepted. If an extension cannot be reached, Ysparr does not reuse stale
+catalog data. Set `YSPARR_EXTENSION_API_KEY` when the extension requires bearer
+authentication. Map extension target metadata to upstream model IDs with
+`YSPARR_MODEL_TYPE_ROUTES`, for example:
+
+```sh
+export YSPARR_MODEL_TYPE_ROUTES='{"openai_compatible":"MiniMax"}'
+```
 
 CLI help is available at both levels:
 

@@ -18,7 +18,9 @@ def test_environment_overrides() -> None:
             "YSPARR_CHAT_MODEL": "chat-main",
             "YSPARR_CODING_BASE_URL": "https://coding.example/v1/",
             "YSPARR_CODING_MODEL": "code-main",
-            "YSPARR_APMATIA_PUBLIC_BASE_URL": "http://apmatia:8000/",
+            "YSPARR_EXTENSION_BASE_URLS": "http://extension:8001/, http://extension-2:8002/",
+            "YSPARR_EXTENSION_API_KEY": "extension-secret",
+            "YSPARR_MODEL_TYPE_ROUTES": '{"openai_compatible": "chat-main"}',
             "YSPARR_DATABASE_PATH": "/tmp/ysparr-test.sqlite3",
             "YSPARR_RETENTION_COMPLETED": "2h",
             "YSPARR_RETENTION_FAILED": "3d",
@@ -32,7 +34,9 @@ def test_environment_overrides() -> None:
     assert config.chat_model == "chat-main"
     assert config.coding_base_url == "https://coding.example/v1"
     assert config.coding_model == "code-main"
-    assert config.apmatia_public_base_url == "http://apmatia:8000"
+    assert config.extension_base_urls == ("http://extension:8001", "http://extension-2:8002")
+    assert config.extension_api_key == "extension-secret"
+    assert config.model_type_routes == {"openai_compatible": "chat-main"}
     assert config.database_path == "/tmp/ysparr-test.sqlite3"
     assert config.completed_retention_seconds == 7200
     assert config.failed_retention_seconds == 259200
@@ -55,9 +59,9 @@ def test_invalid_upstream_url() -> None:
         Config(upstream_base_url="not-a-url")
 
 
-def test_invalid_apmatia_public_url() -> None:
-    with pytest.raises(ConfigError, match="apmatia_public_base_url"):
-        Config(apmatia_public_base_url="not-a-url")
+def test_invalid_extension_url() -> None:
+    with pytest.raises(ConfigError, match="extension_base_urls"):
+        Config(extension_base_urls=("not-a-url",))
 
 
 def test_coding_endpoint_requires_model() -> None:

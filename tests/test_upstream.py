@@ -2,9 +2,11 @@ import asyncio
 import json
 
 import httpx
+import pytest
 
 from ysparr.config import Config
 from ysparr.server.app import RoutedUpstreamAdapter
+from ysparr.upstream.base import UpstreamError
 from ysparr.upstream.http import OpenAIHTTPAdapter
 
 
@@ -97,3 +99,47 @@ def test_explicit_coding_model_reaches_coding_endpoint() -> None:
     ]
     assert [body["model"] for _, body, _ in seen] == ["coding-id", "chat-id"]
     assert [auth for _, _, auth in seen] == [None, "Bearer chat-secret"]
+
+
+def test_extension_target_routes_preferred_type_to_configured_model() -> None:
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content))
+        return httpx.Response(200, json={"id": "completion", "choices": []})
+
+    adapter = RoutedUpstreamAdapter(
+        Config(
+            upstream_base_url="http://chat.example:4100",
+            model_type_routes={"openai_compatible": "MiniMax"},
+        ),
+        transport=httpx.MockTransport(handler),
+    )
+    asyncio.run(
+        adapter.complete(
+            {
+                "model": "agent-name",
+                "messages": [{"role": "system", "content": "instruction"}],
+                "_ysparr_target": {"preferred_model_type": "openai_compatible"},
+            }
+        )
+    )
+    assert seen[0]["model"] == "MiniMax"
+    assert "_ysparr_target" not in seen[0]
+
+
+def test_unknown_extension_target_fails_explicitly() -> None:
+    adapter = RoutedUpstreamAdapter(
+        Config(upstream_base_url="http://chat.example:4100"),
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, json={})),
+    )
+    with pytest.raises(UpstreamError, match="no upstream model route"):
+        asyncio.run(
+            adapter.complete(
+                {
+                    "model": "agent-name",
+                    "messages": [],
+                    "_ysparr_target": {"preferred_model_type": "unknown"},
+                }
+            )
+        )

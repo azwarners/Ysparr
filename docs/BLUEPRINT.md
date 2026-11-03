@@ -75,7 +75,7 @@ Open WebUI
 
 TroubleShell proper owns only its GTK/VTE experience and terminal actions. The integration contributes terminal context to requests and consumes model replies to derive command suggestions.
 
-### Apmatia
+### Apmatia extension
 
 ```text
 Open WebUI
@@ -90,7 +90,9 @@ Open WebUI
    AI
 ```
 
-Apmatia contributes agent identity, prompts, tools, policy, memory, and tool-loop behavior. Ysparr remains unaware of what an agent means.
+Apmatia contributes a catalog entry and additive agent instructions through the
+versioned external extension contract. Ysparr remains unaware of what an agent
+means and does not choose the agent's backend.
 
 ## 4. Architectural Principles
 
