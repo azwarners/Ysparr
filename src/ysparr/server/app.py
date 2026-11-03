@@ -5,7 +5,6 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from ysparr import __version__
-from ysparr.apmatia import ApmatiaPublicClient
 from ysparr.config import Config
 from ysparr.core.jobs import JobManager
 from ysparr.persistence.sqlite import SQLiteJobStore
@@ -14,6 +13,8 @@ from ysparr.server.admin_routes import router as admin_router
 from ysparr.server.openai_routes import router as openai_router
 from ysparr.security import IdentityStore
 from ysparr.upstream import OpenAIHTTPAdapter, UpstreamAdapter
+from ysparr.upstream.base import UpstreamError
+from ysparr.extensions import ExtensionClient
 
 
 class RoutedUpstreamAdapter:
@@ -36,6 +37,7 @@ class RoutedUpstreamAdapter:
             )
         self.chat_model = config.chat_model
         self.coding_model = config.coding_model
+        self.model_type_routes = config.model_type_routes or {}
 
     async def list_models(self):
         result = await self.chat.list_models()
@@ -50,6 +52,11 @@ class RoutedUpstreamAdapter:
         return result
 
     def _target(self, request):
+        target = request.get("_ysparr_target")
+        if isinstance(target, dict):
+            preferred = target.get("preferred_model_type")
+            if preferred == "coding" and self.coding is not None:
+                return self.coding
         if self.coding is not None and request.get("model") == self.coding_model:
             return self.coding
         if self.chat_model and request.get("model") == self.chat_model:
@@ -57,10 +64,35 @@ class RoutedUpstreamAdapter:
         return self.chat
 
     async def complete(self, request):
-        return await self._target(request).complete(request)
+        target = self._target(request)
+        return await target.complete(self._resolved_request(request))
 
     def stream(self, request):
-        return self._target(request).stream(request)
+        target = self._target(request)
+        return target.stream(self._resolved_request(request))
+
+    def _resolved_request(self, request: dict) -> dict:
+        result = _upstream_request(request)
+        metadata = request.get("_ysparr_target")
+        if isinstance(metadata, dict):
+            preferred = metadata.get("preferred_model_type")
+            if preferred in self.model_type_routes:
+                result["model"] = self.model_type_routes[preferred]
+            elif preferred == "coding" and self.coding_model:
+                result["model"] = self.coding_model
+            elif preferred == "chat" and self.chat_model:
+                result["model"] = self.chat_model
+            elif preferred:
+                raise UpstreamError(
+                    f"no upstream model route configured for preferred model type: {preferred}",
+                    422,
+                )
+        return result
+
+
+def _upstream_request(request: dict) -> dict:
+    """Remove Ysparr-internal target metadata before forwarding upstream."""
+    return {key: value for key, value in request.items() if key != "_ysparr_target"}
 
 
 def create_app(
@@ -96,11 +128,10 @@ def create_app(
 
     app = FastAPI(title="Ysparr", version=__version__, lifespan=lifespan)
     app.state.config = runtime_config
-    app.state.apmatia_client = (
-        ApmatiaPublicClient(runtime_config.apmatia_public_base_url)
-        if runtime_config.apmatia_public_base_url
-        else None
-    )
+    app.state.extension_clients = [
+        ExtensionClient(url, runtime_config.extension_api_key)
+        for url in runtime_config.extension_base_urls
+    ]
     app.state.adapter = runtime_adapter
     app.state.job_store = runtime_store
     app.state.identity_store = identity_store

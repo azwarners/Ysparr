@@ -3,20 +3,20 @@
 from __future__ import annotations
 
 import asyncio
+from copy import deepcopy
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from ysparr.apmatia import (
-    ApmatiaAgentNotFound,
-    ApmatiaUnavailable,
-    named_model_id,
-    parse_virtual_model_id,
-    virtual_model_id,
-)
 from ysparr.core.jobs import JobManager
+from ysparr.extensions import (
+    ExtensionClient,
+    ExtensionEntryNotFound,
+    ExtensionUnavailable,
+    matching_entry,
+)
 from ysparr.security import Principal, principal_for_request, require_capability
 from ysparr.upstream.base import UpstreamAdapter, UpstreamError
 
@@ -40,6 +40,10 @@ def _manager(request: Request) -> JobManager:
     return request.app.state.job_manager
 
 
+def _extensions(request: Request) -> list[ExtensionClient]:
+    return list(getattr(request.app.state, "extension_clients", []))
+
+
 def _error(exc: UpstreamError) -> JSONResponse:
     return JSONResponse(
         status_code=exc.status_code,
@@ -55,26 +59,63 @@ async def models(
         result = await _adapter(request).list_models()
     except UpstreamError as exc:
         return _error(exc)
-    client = getattr(request.app.state, "apmatia_client", None)
-    if client is not None:
+
+    data = result.setdefault("data", [])
+    existing = {model.get("id") for model in data if isinstance(model, dict)}
+    for extension in _extensions(request):
         try:
-            agents = await client.list_agents()
-        except ApmatiaUnavailable:
-            # Discovery is optional: retain upstream models and never reuse stale agents.
-            agents = []
-        existing = {model.get("id") for model in result.get("data", []) if isinstance(model, dict)}
-        for agent in agents:
-            model_id = named_model_id(agent["name"])
-            if model_id not in existing:
-                result["data"].append(
-                    {"id": model_id, "object": "model", "owned_by": "apmatia"}
-                )
+            entries = await extension.catalog()
+        except ExtensionUnavailable:
+            # Discovery is optional. Never publish stale catalog data.
+            continue
+        for entry in entries:
+            # Configuration order is the collision policy: the first owner wins.
+            if entry["id"] in existing:
+                continue
+            data.append(
+                {
+                    "id": entry["id"],
+                    "object": "model",
+                    "owned_by": entry.get("owned_by", "extension"),
+                }
+            )
+            existing.add(entry["id"])
     if principal is not None:
         result["data"] = [
-            model for model in result.get("data", [])
+            model
+            for model in data
             if isinstance(model, dict) and principal.allows_model(str(model.get("id", "")))
         ]
     return JSONResponse(content=result)
+
+
+async def _resolve_extension(
+    request: Request,
+    model: str,
+    upstream_request: dict[str, Any],
+) -> tuple[dict[str, Any] | None, bool, bool]:
+    """Resolve one selector using configured extensions in operator order.
+
+    Returns `(resolution, saw_catalog, saw_unavailable_catalog)`. Only the
+    first matching owner receives the request, making catalog collisions
+    deterministic and preventing unregistered extensions from inspecting it.
+    """
+    saw_catalog = False
+    saw_unavailable_catalog = False
+    for extension in _extensions(request):
+        try:
+            entries = await extension.catalog()
+        except ExtensionUnavailable:
+            saw_unavailable_catalog = True
+            continue
+        saw_catalog = True
+        if matching_entry(entries, model) is None:
+            continue
+        try:
+            return await extension.resolve(model, deepcopy(upstream_request)), saw_catalog, saw_unavailable_catalog
+        except ExtensionEntryNotFound:
+            return None, saw_catalog, saw_unavailable_catalog
+    return None, saw_catalog, saw_unavailable_catalog
 
 
 @router.post("/chat/completions")
@@ -87,55 +128,55 @@ async def chat_completions(
     if principal is not None and not principal.allows_model(payload.model):
         return JSONResponse(
             status_code=403,
-            content={"error": {"message": "model is not permitted for this key", "type": "permission_error"}},
+            content={
+                "error": {
+                    "message": "model is not permitted for this key",
+                    "type": "permission_error",
+                }
+            },
         )
+
     upstream_request = payload.model_dump(exclude_none=True)
-    client = getattr(request.app.state, "apmatia_client", None)
-    agent = None
-    if payload.model.startswith("apmatia-agent-"):
-        if client is None:
-            return JSONResponse(
-                status_code=404,
-                content={"error": {"message": "Apmatia agent models are not enabled.", "type": "invalid_request_error"}},
-            )
-        try:
-            agent_id = parse_virtual_model_id(payload.model)
-            if agent_id is not None:
-                agent = await client.get_agent(agent_id)
-            else:
-                raise ValueError("Invalid Apmatia agent model ID.")
-        except ValueError as exc:
-            return JSONResponse(status_code=400, content={"error": {"message": str(exc), "type": "invalid_request_error"}})
-        except ApmatiaAgentNotFound as exc:
-            return JSONResponse(status_code=404, content={"error": {"message": str(exc), "type": "invalid_request_error"}})
-        except ApmatiaUnavailable as exc:
-            return JSONResponse(status_code=503, content={"error": {"message": str(exc), "type": "service_unavailable"}})
-    elif client is not None:
-        # Some clients use the model ID as the display label and ignore `name`.
-        # Resolve a selected public agent name back to its current Apmatia record.
-        try:
-            match = next(
-                (item for item in await client.list_agents() if named_model_id(item["name"]) == payload.model),
-                None,
-            )
-            if match is not None:
-                agent = await client.get_agent(match["id"])
-        except ApmatiaUnavailable:
-            # An ordinary upstream model can still work if Apmatia is unavailable.
-            pass
-    if agent is not None:
-        model = agent.get("model")
-        if not isinstance(model, dict) or not isinstance(model.get("model"), str) or not model["model"]:
-            return JSONResponse(
-                status_code=422,
-                content={"error": {"message": "Published Apmatia agent has no available model mapping.", "type": "invalid_request_error"}},
-            )
-        # Put the compiled agent prompt first; preserve every client message and its order verbatim.
-        upstream_request["model"] = model["model"]
+    resolution, saw_catalog, saw_unavailable_catalog = await _resolve_extension(
+        request, payload.model, upstream_request
+    )
+    if resolution is not None:
         upstream_request["messages"] = [
-            {"role": "system", "content": agent["system_prompt"]},
+            *resolution["contributions"],
             *upstream_request["messages"],
         ]
+        upstream_request["_ysparr_target"] = resolution["target"]
+    elif payload.model.startswith("apmatia-agent-"):
+        if saw_unavailable_catalog and not saw_catalog:
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "error": {
+                        "message": "the configured agent extension is unavailable",
+                        "type": "service_unavailable",
+                    }
+                },
+            )
+        if _extensions(request):
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "error": {
+                        "message": "extension entry not found",
+                        "type": "invalid_request_error",
+                    }
+                },
+            )
+        return JSONResponse(
+            status_code=404,
+            content={
+                "error": {
+                    "message": "agent extensions are not enabled",
+                    "type": "invalid_request_error",
+                }
+            },
+        )
+
     if payload.stream:
         job_id = await _manager(request).submit(
             upstream_request,
@@ -143,6 +184,7 @@ async def chat_completions(
             principal_id=principal.id if principal else None,
         )
         return StreamingResponse(_manager(request).stream(job_id), media_type="text/event-stream")
+
     job_id = await _manager(request).submit(
         upstream_request,
         openwebui_chat_id=request.headers.get("X-OpenWebUI-Chat-Id") or None,

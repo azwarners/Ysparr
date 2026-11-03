@@ -1,11 +1,12 @@
 import asyncio
+import json
 from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
 
-from ysparr.apmatia import ApmatiaPublicClient
 from ysparr.config import Config
+from ysparr.extensions import ExtensionClient
 from ysparr.server.app import create_app
 from ysparr.upstream.base import UpstreamError
 
@@ -51,6 +52,43 @@ def _app(tmp_path, adapter):
     return create_app(Config(database_path=str(tmp_path / "jobs.sqlite3")), adapter)
 
 
+def _extension_app(tmp_path, adapter, handler):
+    app = _app(tmp_path, adapter)
+    app.state.extension_clients = [
+        ExtensionClient("http://extension", transport=httpx.MockTransport(handler))
+    ]
+    return app
+
+
+def _extension_handler(request):
+    if request.method == "GET":
+        return httpx.Response(
+            200,
+            json={
+                "version": "1",
+                "entries": [
+                    {
+                        "id": "Luna",
+                        "name": "Luna",
+                        "aliases": ["apmatia-agent-12"],
+                        "owned_by": "apmatia",
+                        "target": {"preferred_model_type": "openai_compatible"},
+                    }
+                ],
+            },
+        )
+    body = json.loads(request.content)
+    assert body["request"]["messages"] == [{"role": "user", "content": "hello"}]
+    return httpx.Response(
+        200,
+        json={
+            "version": "1",
+            "contributions": [{"role": "system", "content": "Compiled Luna instructions."}],
+            "target": {"preferred_model_type": "openai_compatible"},
+        },
+    )
+
+
 def test_health_and_status_endpoints_use_http_path(tmp_path) -> None:
     app = _app(tmp_path, FakeAdapter())
     assert request(app, "GET", "/health").json()["status"] == "ok"
@@ -70,101 +108,101 @@ def test_models_upstream_error(tmp_path) -> None:
     assert "Traceback" not in response.text
 
 
-def _with_apmatia(app, handler):
-    app.state.apmatia_client = ApmatiaPublicClient("http://apmatia", httpx.MockTransport(handler))
-    return app
-
-
-def _agent_response(request):
-    if request.url.path.endswith("/12"):
-        return httpx.Response(200, json={
-            "id": 12,
-            "name": "Luna",
-            "system_prompt": "Compiled Luna instructions.",
-            "model": {"id": 4, "alias": "Fast", "backend": "openai", "model": "provider/model-x"},
-        })
-    return httpx.Response(200, json=[{
-        "id": 12,
-        "name": "Luna",
-        "system_prompt": "Compiled Luna instructions.",
-        "model": {"id": 4, "alias": "Fast", "backend": "openai", "model": "provider/model-x"},
-    }])
-
-
-def test_models_include_published_apmatia_agents(tmp_path) -> None:
-    app = _with_apmatia(_app(tmp_path, FakeAdapter()), _agent_response)
+def test_generic_extension_adds_catalog_and_system_contribution(tmp_path) -> None:
+    adapter = FakeAdapter()
+    app = _extension_app(tmp_path, adapter, _extension_handler)
     models = request(app, "GET", "/v1/models").json()["data"]
-    assert models[0]["id"] == "fake-model"
     assert {"id": "Luna", "object": "model", "owned_by": "apmatia"} in models
-
-
-def test_apmatia_agent_completion_composes_prompt_and_preserves_client_messages(tmp_path) -> None:
-    adapter = FakeAdapter()
-    app = _with_apmatia(_app(tmp_path, adapter), _agent_response)
-    messages = [
-        {"role": "system", "content": "client policy"},
-        {"role": "developer", "content": "client style"},
-        {"role": "user", "content": "hello"},
-    ]
-    response = request(app, "POST", "/v1/chat/completions", json={
-        "model": "Luna", "messages": messages,
-    })
+    response = request(
+        app,
+        "POST",
+        "/v1/chat/completions",
+        json={"model": "apmatia-agent-12", "messages": [{"role": "user", "content": "hello"}]},
+    )
     assert response.status_code == 200
-    assert adapter.completed[0]["model"] == "provider/model-x"
-    assert adapter.completed[0]["messages"] == [
-        {"role": "system", "content": "Compiled Luna instructions."}, *messages,
-    ]
+    assert adapter.completed[0]["messages"][0] == {
+        "role": "system",
+        "content": "Compiled Luna instructions.",
+    }
+    assert adapter.completed[0]["model"] == "apmatia-agent-12"
+    assert adapter.completed[0]["_ysparr_target"] == {"preferred_model_type": "openai_compatible"}
 
 
-def test_legacy_apmatia_model_id_still_works(tmp_path) -> None:
+def test_generic_extension_stream_uses_existing_job_path(tmp_path) -> None:
     adapter = FakeAdapter()
-    app = _with_apmatia(_app(tmp_path, adapter), _agent_response)
-    response = request(app, "POST", "/v1/chat/completions", json={
-        "model": "apmatia-agent-12", "messages": [{"role": "user", "content": "hello"}],
-    })
-    assert response.status_code == 200
-    assert adapter.completed[0]["model"] == "provider/model-x"
-
-
-def test_apmatia_stream_uses_existing_job_path(tmp_path) -> None:
-    adapter = FakeAdapter()
-    app = _with_apmatia(_app(tmp_path, adapter), _agent_response)
-    response = request(app, "POST", "/v1/chat/completions", json={
-        "model": "apmatia-agent-12", "messages": [{"role": "user", "content": "hello"}], "stream": True,
-    })
+    app = _extension_app(tmp_path, adapter, _extension_handler)
+    response = request(
+        app,
+        "POST",
+        "/v1/chat/completions",
+        json={
+            "model": "Luna",
+            "messages": [{"role": "user", "content": "hello"}],
+            "stream": True,
+        },
+    )
     assert response.status_code == 200
     assert response.text.count("data:") == 2
-    assert adapter.completed[0]["model"] == "provider/model-x"
-    assert adapter.completed[0]["stream"] is True
+    assert adapter.completed[0]["_ysparr_target"]["preferred_model_type"] == "openai_compatible"
 
 
-def test_unknown_or_unavailable_apmatia_agent_fails_closed(tmp_path) -> None:
-    app = _with_apmatia(_app(tmp_path, FakeAdapter()), lambda request: httpx.Response(404))
-    response = request(app, "POST", "/v1/chat/completions", json={
-        "model": "apmatia-agent-99", "messages": [{"role": "user", "content": "hello"}],
-    })
-    assert response.status_code == 404
-    assert response.json()["error"]["type"] == "invalid_request_error"
+def test_extension_collision_uses_first_registered_owner(tmp_path) -> None:
+    calls: list[str] = []
 
+    def handler(request):
+        calls.append(request.url.host)
+        if request.method == "GET":
+            return httpx.Response(
+                200,
+                json={
+                    "version": "1",
+                    "entries": [
+                        {
+                            "id": "shared",
+                            "name": "first",
+                            "aliases": [],
+                            "owned_by": request.url.host,
+                            "target": {"preferred_model_type": request.url.host},
+                        }
+                    ],
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "version": "1",
+                "contributions": [{"role": "system", "content": request.url.host}],
+                "target": {"preferred_model_type": request.url.host},
+            },
+        )
 
-def test_apmatia_agent_without_model_mapping_fails_closed(tmp_path) -> None:
-    app = _with_apmatia(
-        _app(tmp_path, FakeAdapter()),
-        lambda request: httpx.Response(200, json={
-            "id": 12, "name": "Luna", "system_prompt": "Compiled Luna instructions.", "model": None,
-        }),
+    adapter = FakeAdapter()
+    app = _app(tmp_path, adapter)
+    app.state.extension_clients = [
+        ExtensionClient("http://first", transport=httpx.MockTransport(handler)),
+        ExtensionClient("http://second", transport=httpx.MockTransport(handler)),
+    ]
+    response = request(
+        app,
+        "POST",
+        "/v1/chat/completions",
+        json={"model": "shared", "messages": [{"role": "user", "content": "hello"}]},
     )
-    response = request(app, "POST", "/v1/chat/completions", json={
-        "model": "apmatia-agent-12", "messages": [{"role": "user", "content": "hello"}],
-    })
-    assert response.status_code == 422
-    assert "no available model mapping" in response.json()["error"]["message"]
+    assert response.status_code == 200
+    assert calls == ["first", "first"]
+    assert adapter.completed[0]["messages"][0]["content"] == "first"
 
 
-def test_unavailable_apmatia_hides_virtual_models_without_stale_data(tmp_path) -> None:
-    app = _with_apmatia(_app(tmp_path, FakeAdapter()), lambda request: httpx.Response(503))
-    models = request(app, "GET", "/v1/models").json()["data"]
-    assert [model["id"] for model in models] == ["fake-model"]
+def test_selected_legacy_agent_fails_when_extension_is_unavailable(tmp_path) -> None:
+    app = _extension_app(tmp_path, FakeAdapter(), lambda request: httpx.Response(503))
+    response = request(
+        app,
+        "POST",
+        "/v1/chat/completions",
+        json={"model": "apmatia-agent-99", "messages": [{"role": "user", "content": "hello"}]},
+    )
+    assert response.status_code == 503
+    assert response.json()["error"]["type"] == "service_unavailable"
 
 
 def test_non_streaming_completion_forwards_and_returns_response(tmp_path) -> None:

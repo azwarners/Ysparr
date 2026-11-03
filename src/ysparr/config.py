@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 from dataclasses import dataclass
@@ -36,7 +37,9 @@ class Config:
     completed_retention_seconds: int = 7 * 86400
     failed_retention_seconds: int = 86400
     orphaned_retention_seconds: int = 30 * 86400
-    apmatia_public_base_url: str | None = None
+    extension_base_urls: tuple[str, ...] = ()
+    extension_api_key: str | None = None
+    model_type_routes: dict[str, str] | None = None
     auth_enabled: bool = False
     admin_api_key: str | None = None
 
@@ -71,10 +74,19 @@ class Config:
                 raise ConfigError("coding_base_url must be an API root URL without credentials, query, or fragment")
             if self.chat_model == self.coding_model:
                 raise ConfigError("chat_model and coding_model must be different so clients can select each endpoint")
-        if self.apmatia_public_base_url is not None:
-            public = urlparse(self.apmatia_public_base_url)
-            if public.scheme not in {"http", "https"} or not public.netloc:
-                raise ConfigError("apmatia_public_base_url must be an http(s) URL")
+        for extension_url in self.extension_base_urls:
+            extension = urlparse(extension_url)
+            if extension.scheme not in {"http", "https"} or not extension.netloc:
+                raise ConfigError("extension_base_urls must contain only http(s) URLs")
+        if self.model_type_routes is not None and any(
+            not isinstance(key, str)
+            or not key.strip()
+            or not isinstance(value, str)
+            or not value.strip()
+            or any(char.isspace() for char in value)
+            for key, value in self.model_type_routes.items()
+        ):
+            raise ConfigError("model_type_routes must map non-empty types to model IDs")
         if not self.database_path.strip():
             raise ConfigError("database_path must not be empty")
         for name, value in (
@@ -111,6 +123,17 @@ def load_config(environ: dict[str, str] | None = None) -> Config:
     orphaned_retention_seconds = _duration(
         values.get("YSPARR_RETENTION_ORPHANED", "30d"), "YSPARR_RETENTION_ORPHANED"
     )
+    extension_urls_value = values.get("YSPARR_EXTENSION_BASE_URLS") or values.get("YSPARR_EXTENSION_BASE_URL") or ""
+    extension_base_urls = tuple(
+        url.strip().rstrip("/") for url in extension_urls_value.split(",") if url.strip()
+    )
+    routes_value = values.get("YSPARR_MODEL_TYPE_ROUTES", "")
+    try:
+        model_type_routes = json.loads(routes_value) if routes_value.strip() else None
+    except json.JSONDecodeError as exc:
+        raise ConfigError("YSPARR_MODEL_TYPE_ROUTES must be a JSON object") from exc
+    if model_type_routes is not None and not isinstance(model_type_routes, dict):
+        raise ConfigError("YSPARR_MODEL_TYPE_ROUTES must be a JSON object")
     return Config(
         host=host,
         port=port,
@@ -119,7 +142,9 @@ def load_config(environ: dict[str, str] | None = None) -> Config:
         chat_model=chat_model,
         coding_base_url=coding_base_url.rstrip("/") if coding_base_url else None,
         coding_model=coding_model,
-        apmatia_public_base_url=(values.get("YSPARR_APMATIA_PUBLIC_BASE_URL") or "").rstrip("/") or None,
+        extension_base_urls=extension_base_urls,
+        extension_api_key=values.get("YSPARR_EXTENSION_API_KEY") or None,
+        model_type_routes=model_type_routes,
         auth_enabled=values.get("YSPARR_AUTH_ENABLED", "false").lower() in {"1", "true", "yes", "on"},
         admin_api_key=values.get("YSPARR_ADMIN_API_KEY") or None,
         database_path=database_path,
