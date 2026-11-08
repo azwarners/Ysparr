@@ -47,7 +47,7 @@ def _extensions(request: Request) -> list[ExtensionClient]:
 
 
 def _principal_id(principal: Principal | None) -> str | None:
-    return principal.id if principal is not None else None
+    return principal.id if principal is not None and not principal.public_access else None
 
 
 def _is_reserved_apmatia_selector(model: str) -> bool:

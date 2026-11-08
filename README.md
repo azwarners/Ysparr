@@ -147,6 +147,9 @@ ysparr key create nick workstation --models chat-model-id,public-starter-name
 
 The key is printed once. Ysparr stores only a scrypt hash and a short fingerprint. `ysparr key list` shows metadata only; `ysparr key disable ID`, `enable ID`, `revoke ID`, and `rotate ID` take effect immediately. `ysparr key create USER LABEL --models model-a,StarterName` creates a key restricted to those model IDs. Its allowlist is enforced in `/v1/models` and at completion time, including guessed Apmatia IDs. Only currently published Apmatia agents can be resolved, and an agent must also be explicitly included in the key's model allowlist. `--public` creates a chat-only key with no job inspection or cancellation access. `--admin` grants a key administrative access to retained jobs, including historical jobs without an owner.
 
+Public keys send no personal principal assertion to extensions, so they cannot
+cause Apmatia to disclose a mapped user's private agents.
+
 Update a key's policy without rotating its secret or restarting Ysparr:
 
 ```sh

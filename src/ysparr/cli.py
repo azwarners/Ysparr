@@ -109,7 +109,10 @@ def main(argv: list[str] | None = None) -> int:
                     capabilities = tuple(item for item in args.capabilities.split(",") if item)
                 else:
                     capabilities = ("chat", "jobs:read", "jobs:cancel")
-                secret, key_id = identities.create_key(args.user, args.label, tuple(x for x in args.models.split(",") if x), capabilities, args.admin)
+                secret, key_id = identities.create_key(
+                    args.user, args.label, tuple(x for x in args.models.split(",") if x), capabilities,
+                    args.admin, public_access=args.public,
+                )
                 print(json.dumps({"id": key_id, "key": secret, "warning": "Save this key now; it is shown only once."}))
             elif args.key_command == "list":
                 print(json.dumps(identities.list_keys(args.user)))
@@ -120,14 +123,23 @@ def main(argv: list[str] | None = None) -> int:
                 elif args.capabilities is not None:
                     capabilities = tuple(item for item in args.capabilities.split(",") if item)
                 models = tuple(item for item in args.models.split(",") if item) if args.models is not None else None
-                identities.update_policy(args.id, models=models, capabilities=capabilities)
+                identities.update_policy(
+                    args.id,
+                    models=models,
+                    capabilities=capabilities,
+                    public_access=True if args.public else False if args.capabilities is not None else None,
+                )
                 metadata = next(key for key in identities.list_keys() if key["id"] == args.id)
                 print(json.dumps({"id": args.id, "models": metadata["models"].splitlines(), "capabilities": metadata["capabilities"].splitlines()}))
             elif args.key_command == "rotate":
                 old = next((key for key in identities.list_keys() if key["id"] == args.id), None)
                 if old is None:
                     raise ValueError("unknown key")
-                secret, key_id = identities.create_key(old["name"], args.label or old["label"], tuple(old["models"].splitlines()), tuple(old["capabilities"].splitlines()), bool(old["admin"]))
+                secret, key_id = identities.create_key(
+                    old["name"], args.label or old["label"], tuple(old["models"].splitlines()),
+                    tuple(old["capabilities"].splitlines()), bool(old["admin"]),
+                    public_access=bool(old["public_access"]),
+                )
                 identities.set_key(args.id, "revoke")
                 print(json.dumps({"id": key_id, "key": secret, "revoked": args.id, "warning": "Save this replacement key now; it is shown only once."}))
             else:

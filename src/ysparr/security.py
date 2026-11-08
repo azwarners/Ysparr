@@ -23,6 +23,7 @@ class Principal:
     models: tuple[str, ...]
     capabilities: tuple[str, ...]
     admin: bool = False
+    public_access: bool = False
 
     def allows_model(self, model_id: str) -> bool:
         return "*" in self.models or model_id in self.models
@@ -48,9 +49,13 @@ class IdentityStore:
                     id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES ysparr_users(id), label TEXT NOT NULL,
                     secret_hash BLOB NOT NULL, fingerprint TEXT NOT NULL, models TEXT NOT NULL,
                     capabilities TEXT NOT NULL, admin INTEGER NOT NULL DEFAULT 0, enabled INTEGER NOT NULL DEFAULT 1,
-                    revoked INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    revoked INTEGER NOT NULL DEFAULT 0, public_access INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 );
             """)
+            columns = {row["name"] for row in self.db.execute("PRAGMA table_info(ysparr_keys)")}
+            if "public_access" not in columns:
+                self.db.execute("ALTER TABLE ysparr_keys ADD COLUMN public_access INTEGER NOT NULL DEFAULT 0")
 
     def create_user(self, name: str) -> str:
         if not name.strip():
@@ -62,7 +67,7 @@ class IdentityStore:
 
     def create_key(self, user: str, label: str, models: tuple[str, ...] = ("*",),
                    capabilities: tuple[str, ...] = ("chat", "jobs:read", "jobs:cancel"),
-                   admin: bool = False) -> tuple[str, str]:
+                   admin: bool = False, public_access: bool = False) -> tuple[str, str]:
         self._validate_capabilities(capabilities)
         with self.lock, self.db:
             row = self.db.execute("SELECT id FROM ysparr_users WHERE id=? OR name=?", (user, user)).fetchone()
@@ -72,11 +77,11 @@ class IdentityStore:
             secret = f"ys_{key_id}." + secrets.token_urlsafe(32)
             digest = hashlib.scrypt(secret.encode(), salt=key_id.encode(), n=2**14, r=8, p=1)
             self.db.execute(
-                "INSERT INTO ysparr_keys(id,user_id,label,secret_hash,fingerprint,models,capabilities,admin) "
-                "VALUES (?,?,?,?,?,?,?,?)",
+                "INSERT INTO ysparr_keys(id,user_id,label,secret_hash,fingerprint,models,capabilities,admin,public_access) "
+                "VALUES (?,?,?,?,?,?,?,?,?)",
                 (
                     key_id, row["id"], label, digest, secret[-8:], "\n".join(models),
-                    "\n".join(capabilities), int(admin),
+                    "\n".join(capabilities), int(admin), int(public_access),
                 ),
             )
             return secret, key_id
@@ -93,9 +98,10 @@ class IdentityStore:
         *,
         models: tuple[str, ...] | None = None,
         capabilities: tuple[str, ...] | None = None,
+        public_access: bool | None = None,
     ) -> None:
-        if models is None and capabilities is None:
-            raise ValueError("provide models and/or capabilities")
+        if models is None and capabilities is None and public_access is None:
+            raise ValueError("provide models, capabilities, and/or public_access")
         if capabilities is not None:
             self._validate_capabilities(capabilities)
         assignments = []
@@ -106,6 +112,9 @@ class IdentityStore:
         if capabilities is not None:
             assignments.append("capabilities=?")
             values.append("\n".join(capabilities))
+        if public_access is not None:
+            assignments.append("public_access=?")
+            values.append(int(public_access))
         values.append(key_id)
         with self.lock, self.db:
             cursor = self.db.execute(
@@ -129,13 +138,13 @@ class IdentityStore:
             return None
         return Principal(
             row["user_id"], row["name"], tuple(row["models"].splitlines()),
-            tuple(row["capabilities"].splitlines()), bool(row["admin"]),
+            tuple(row["capabilities"].splitlines()), bool(row["admin"]), bool(row["public_access"]),
         )
 
     def list_keys(self, user: str | None = None) -> list[dict]:
         with self.lock:
             rows = self.db.execute(
-                "SELECT k.id,k.label,k.fingerprint,k.enabled,k.revoked,k.admin,k.models,k.capabilities,u.name "
+                "SELECT k.id,k.label,k.fingerprint,k.enabled,k.revoked,k.admin,k.public_access,k.models,k.capabilities,u.name "
                 "FROM ysparr_keys k JOIN ysparr_users u ON u.id=k.user_id "
                 "WHERE (? IS NULL OR u.name=? OR u.id=?) ORDER BY k.created_at",
                 (user, user, user),
@@ -143,7 +152,7 @@ class IdentityStore:
         result = []
         for row in rows:
             item = dict(row)
-            for flag in ("enabled", "revoked", "admin"):
+            for flag in ("enabled", "revoked", "admin", "public_access"):
                 item[flag] = bool(item[flag])
             result.append(item)
         return result
@@ -171,4 +180,3 @@ async def principal_for_request(request: Request) -> Principal | None:
 def require_capability(principal: Principal | None, capability: str) -> None:
     if principal is not None and not principal.admin and capability not in principal.capabilities:
         raise HTTPException(status_code=403, detail="key does not permit this operation")
-

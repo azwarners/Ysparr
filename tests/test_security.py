@@ -46,6 +46,16 @@ def test_keys_are_hashed_and_revoke_without_restart(tmp_path):
     assert store.authenticate(key) is None
 
 
+def test_public_access_policy_persists_and_hides_principal_from_extensions(tmp_path):
+    store = IdentityStore(str(tmp_path / "ysparr.sqlite3"))
+    user = store.create_user("shared")
+    key, key_id = store.create_key(user, "public", ("public-model",), ("chat",), public_access=True)
+    assert store.authenticate(key).public_access is True
+    assert store.list_keys()[0]["public_access"] is True
+    store.update_policy(key_id, public_access=False)
+    assert store.authenticate(key).public_access is False
+
+
 def test_authenticated_model_filter_and_guessed_id_rejection(tmp_path):
     config = Config(database_path=str(tmp_path / "ysparr.sqlite3"), auth_enabled=True)
     app = create_app(config, Adapter())
