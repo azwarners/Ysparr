@@ -39,6 +39,8 @@ class Config:
     orphaned_retention_seconds: int = 30 * 86400
     extension_base_urls: tuple[str, ...] = ()
     extension_api_key: str | None = None
+    extension_allowed_roles: tuple[str, ...] = ("system", "developer")
+    extension_context_failure: str = "skip"
     model_type_routes: dict[str, str] | None = None
     auth_enabled: bool = False
     admin_api_key: str | None = None
@@ -78,6 +80,12 @@ class Config:
             extension = urlparse(extension_url)
             if extension.scheme not in {"http", "https"} or not extension.netloc:
                 raise ConfigError("extension_base_urls must contain only http(s) URLs")
+        if not self.extension_allowed_roles or any(
+            role not in {"system", "developer"} for role in self.extension_allowed_roles
+        ):
+            raise ConfigError("extension_allowed_roles may contain only system and developer")
+        if self.extension_context_failure not in {"skip", "fail"}:
+            raise ConfigError("extension_context_failure must be skip or fail")
         if self.model_type_routes is not None and any(
             not isinstance(key, str)
             or not key.strip()
@@ -144,6 +152,12 @@ def load_config(environ: dict[str, str] | None = None) -> Config:
         coding_model=coding_model,
         extension_base_urls=extension_base_urls,
         extension_api_key=values.get("YSPARR_EXTENSION_API_KEY") or None,
+        extension_allowed_roles=tuple(
+            role.strip()
+            for role in (values.get("YSPARR_EXTENSION_ALLOWED_ROLES", "system,developer")).split(",")
+            if role.strip()
+        ),
+        extension_context_failure=values.get("YSPARR_EXTENSION_CONTEXT_FAILURE", "skip").strip().lower(),
         model_type_routes=model_type_routes,
         auth_enabled=values.get("YSPARR_AUTH_ENABLED", "false").lower() in {"1", "true", "yes", "on"},
         admin_api_key=values.get("YSPARR_ADMIN_API_KEY") or None,

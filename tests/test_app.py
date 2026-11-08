@@ -4,9 +4,10 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
+import pytest
 
 from ysparr.config import Config
-from ysparr.extensions import ExtensionClient
+from ysparr.extensions import ExtensionClient, ExtensionUnavailable
 from ysparr.server.app import create_app
 from ysparr.upstream.base import UpstreamError
 
@@ -146,6 +147,92 @@ def test_generic_extension_stream_uses_existing_job_path(tmp_path) -> None:
     assert adapter.completed[0]["_ysparr_target"]["preferred_model_type"] == "openai_compatible"
 
 
+def test_context_extension_enriches_ordinary_model_without_selecting_backend(tmp_path) -> None:
+    def handler(request):
+        if request.method == "GET":
+            return httpx.Response(
+                200,
+                json={
+                    "version": "1",
+                    "entries": [
+                        {
+                            "id": "workspace-context",
+                            "name": "Workspace context",
+                            "aliases": [],
+                            "owned_by": "context",
+                            "applies_to": "all",
+                            "target": {},
+                        }
+                    ],
+                },
+            )
+        body = json.loads(request.content)
+        assert body["model"] == "fake-model"
+        return httpx.Response(
+            200,
+            json={
+                "version": "1",
+                "contributions": [{"role": "developer", "content": "Use workspace context."}],
+                "target": {},
+            },
+        )
+
+    adapter = FakeAdapter()
+    app = _extension_app(tmp_path, adapter, handler)
+    response = request(
+        app,
+        "POST",
+        "/v1/chat/completions",
+        json={"model": "fake-model", "messages": [{"role": "user", "content": "hello"}]},
+    )
+    assert response.status_code == 200
+    assert adapter.completed[0]["messages"] == [
+        {"role": "developer", "content": "Use workspace context."},
+        {"role": "user", "content": "hello"},
+    ]
+    assert "_ysparr_target" not in adapter.completed[0]
+
+
+def test_context_extension_can_be_configured_as_required(tmp_path) -> None:
+    def handler(request):
+        if request.method == "GET":
+            return httpx.Response(
+                200,
+                json={
+                    "version": "1",
+                    "entries": [
+                        {
+                            "id": "required-context",
+                            "name": "Required context",
+                            "aliases": [],
+                            "owned_by": "context",
+                            "applies_to": "all",
+                            "target": {},
+                        }
+                    ],
+                },
+            )
+        return httpx.Response(503)
+
+    adapter = FakeAdapter()
+    app = _app(tmp_path, adapter)
+    app.state.extension_clients = [
+        ExtensionClient(
+            "http://extension",
+            transport=httpx.MockTransport(handler),
+            context_failure="fail",
+        )
+    ]
+    response = request(
+        app,
+        "POST",
+        "/v1/chat/completions",
+        json={"model": "fake-model", "messages": [{"role": "user", "content": "hello"}]},
+    )
+    assert response.status_code == 503
+    assert adapter.completed == []
+
+
 def test_extension_collision_uses_first_registered_owner(tmp_path) -> None:
     calls: list[str] = []
 
@@ -193,16 +280,85 @@ def test_extension_collision_uses_first_registered_owner(tmp_path) -> None:
     assert adapter.completed[0]["messages"][0]["content"] == "first"
 
 
-def test_selected_legacy_agent_fails_when_extension_is_unavailable(tmp_path) -> None:
-    app = _extension_app(tmp_path, FakeAdapter(), lambda request: httpx.Response(503))
+def test_unknown_legacy_selector_remains_an_ordinary_upstream_model(tmp_path) -> None:
+    adapter = FakeAdapter()
+    app = _extension_app(tmp_path, adapter, lambda request: httpx.Response(503))
     response = request(
         app,
         "POST",
         "/v1/chat/completions",
         json={"model": "apmatia-agent-99", "messages": [{"role": "user", "content": "hello"}]},
     )
+    assert response.status_code == 200
+    assert adapter.completed[0]["model"] == "apmatia-agent-99"
+
+
+def test_selected_extension_failure_does_not_fall_back_to_upstream(tmp_path) -> None:
+    def handler(request):
+        if request.method == "GET":
+            return httpx.Response(
+                200,
+                json={
+                    "version": "1",
+                    "entries": [
+                        {
+                            "id": "owned-model",
+                            "name": "Owned model",
+                            "aliases": [],
+                            "owned_by": "dummy",
+                            "target": {"preferred_model_type": "chat"},
+                        }
+                    ],
+                },
+            )
+        return httpx.Response(503)
+
+    adapter = FakeAdapter()
+    app = _extension_app(tmp_path, adapter, handler)
+    response = request(
+        app,
+        "POST",
+        "/v1/chat/completions",
+        json={"model": "owned-model", "messages": [{"role": "user", "content": "hello"}]},
+    )
     assert response.status_code == 503
     assert response.json()["error"]["type"] == "service_unavailable"
+    assert adapter.completed == []
+
+
+def test_extension_rejects_duplicate_selectors_in_one_catalog() -> None:
+    async def read_catalog():
+        client = ExtensionClient(
+            "http://extension",
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(
+                    200,
+                    json={
+                        "version": "1",
+                        "entries": [
+                            {
+                                "id": "same",
+                                "name": "First",
+                                "aliases": [],
+                                "owned_by": "dummy",
+                                "target": {"preferred_model_type": "chat"},
+                            },
+                            {
+                                "id": "other",
+                                "name": "Second",
+                                "aliases": ["same"],
+                                "owned_by": "dummy",
+                                "target": {"preferred_model_type": "chat"},
+                            },
+                        ],
+                    },
+                )
+            ),
+        )
+        return await client.catalog()
+
+    with pytest.raises(ExtensionUnavailable, match="colliding catalog selectors"):
+        asyncio.run(read_catalog())
 
 
 def test_non_streaming_completion_forwards_and_returns_response(tmp_path) -> None:

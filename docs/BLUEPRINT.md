@@ -94,6 +94,27 @@ Apmatia contributes a catalog entry and additive agent instructions through the
 versioned external extension contract. Ysparr remains unaware of what an agent
 means and does not choose the agent's backend.
 
+The current contract is deliberately narrow: `GET /api/public/ysparr/catalog`
+returns version `1` entries with an ID, aliases, owner, and scalar target
+metadata; `POST /api/public/ysparr/resolve` receives a read-only request copy
+only after a catalog match. The response may contain additive `system` or
+`developer` contributions and scalar target metadata. Ysparr preserves the
+client messages and existing request fields, and strips internal target
+metadata before forwarding upstream. Configured extension order is the
+collision policy. A selected entry is authoritative, so resolution failure or
+disappearance fails explicitly rather than falling back to an ordinary model;
+unmatched ordinary models remain independent of extension availability. An
+entry may instead declare `applies_to: "all"` as an optional context provider.
+Context providers are consulted in operator order for ordinary models, receive
+the same read-only request view, and are restricted to lower-trust `developer`
+contributions; their failure is skipped. They never supply routing metadata or
+appear as selectable models.
+
+Operators may restrict accepted roles with `YSPARR_EXTENSION_ALLOWED_ROLES`
+and promote context-provider failure from `skip` to `fail` with
+`YSPARR_EXTENSION_CONTEXT_FAILURE`. Selector resolution failures always fail;
+there is no implicit substitution with another model.
+
 ## 4. Architectural Principles
 
 ### 4.1 Transparent by default

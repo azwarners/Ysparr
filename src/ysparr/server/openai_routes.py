@@ -15,6 +15,7 @@ from ysparr.extensions import (
     ExtensionClient,
     ExtensionEntryNotFound,
     ExtensionUnavailable,
+    matching_context_entry,
     matching_entry,
 )
 from ysparr.security import Principal, principal_for_request, require_capability
@@ -69,6 +70,8 @@ async def models(
             # Discovery is optional. Never publish stale catalog data.
             continue
         for entry in entries:
+            if entry.get("applies_to", "selector") != "selector":
+                continue
             # Configuration order is the collision policy: the first owner wins.
             if entry["id"] in existing:
                 continue
@@ -93,29 +96,70 @@ async def _resolve_extension(
     request: Request,
     model: str,
     upstream_request: dict[str, Any],
-) -> tuple[dict[str, Any] | None, bool, bool]:
+) -> tuple[dict[str, Any] | None, bool, bool, bool]:
     """Resolve one selector using configured extensions in operator order.
 
-    Returns `(resolution, saw_catalog, saw_unavailable_catalog)`. Only the
+    Returns `(resolution, saw_catalog, saw_unavailable_catalog, matched)`. Only the
     first matching owner receives the request, making catalog collisions
     deterministic and preventing unregistered extensions from inspecting it.
     """
     saw_catalog = False
     saw_unavailable_catalog = False
+    matched = False
+    context_contributions: list[dict[str, Any]] = []
+    selected_resolution: dict[str, Any] | None = None
     for extension in _extensions(request):
+        # Once a selector owner is found, later registrations must not even
+        # receive a catalog request for it. This makes collision ownership a
+        # real trust boundary, while ordinary models can still collect context
+        # from every configured context extension.
+        if matched:
+            break
         try:
             entries = await extension.catalog()
         except ExtensionUnavailable:
             saw_unavailable_catalog = True
             continue
         saw_catalog = True
-        if matching_entry(entries, model) is None:
-            continue
-        try:
-            return await extension.resolve(model, deepcopy(upstream_request)), saw_catalog, saw_unavailable_catalog
-        except ExtensionEntryNotFound:
-            return None, saw_catalog, saw_unavailable_catalog
-    return None, saw_catalog, saw_unavailable_catalog
+        context_entry = matching_context_entry(entries)
+        if context_entry is not None:
+            try:
+                context_resolution = await extension.resolve(
+                    model, deepcopy(upstream_request)
+                )
+                if any(item["role"] != "developer" for item in context_resolution["contributions"]):
+                    raise ExtensionUnavailable("context extensions may only contribute developer messages")
+                context_contributions.extend(context_resolution["contributions"])
+            except ExtensionUnavailable:
+                # Context is optional by default. A failed context provider
+                # must not make an otherwise valid ordinary model unusable.
+                if extension.context_failure == "fail":
+                    raise
+                pass
+        if not matched and matching_entry(entries, model) is not None:
+            matched = True
+            try:
+                selected_resolution = await extension.resolve(
+                    model, deepcopy(upstream_request)
+                )
+            except ExtensionEntryNotFound:
+                # The catalog was authoritative when it matched. Do not silently
+                # reinterpret a disappearing virtual model as an upstream model.
+                return None, saw_catalog, saw_unavailable_catalog, matched
+            except ExtensionUnavailable:
+                # The selected extension is part of the request's route. A
+                # transient failure must be explicit; implicit substitution would
+                # change the selected application's behavior and trust boundary.
+                raise
+    if selected_resolution is None and not context_contributions:
+        return None, saw_catalog, saw_unavailable_catalog, matched
+    return {
+        "contributions": [
+            *context_contributions,
+            *(selected_resolution or {}).get("contributions", []),
+        ],
+        "target": (selected_resolution or {}).get("target", {}),
+    }, saw_catalog, saw_unavailable_catalog, matched
 
 
 @router.post("/chat/completions")
@@ -137,46 +181,37 @@ async def chat_completions(
         )
 
     upstream_request = payload.model_dump(exclude_none=True)
-    resolution, saw_catalog, saw_unavailable_catalog = await _resolve_extension(
-        request, payload.model, upstream_request
-    )
+    try:
+        resolution, saw_catalog, saw_unavailable_catalog, matched = await _resolve_extension(
+            request, payload.model, upstream_request
+        )
+    except ExtensionUnavailable:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "error": {
+                    "message": "the selected extension is unavailable",
+                    "type": "service_unavailable",
+                }
+            },
+        )
+    if matched and resolution is None:
+        return JSONResponse(
+            status_code=404,
+            content={
+                "error": {
+                    "message": "extension entry is no longer available",
+                    "type": "invalid_request_error",
+                }
+            },
+        )
     if resolution is not None:
         upstream_request["messages"] = [
             *resolution["contributions"],
             *upstream_request["messages"],
         ]
-        upstream_request["_ysparr_target"] = resolution["target"]
-    elif payload.model.startswith("apmatia-agent-"):
-        if saw_unavailable_catalog and not saw_catalog:
-            return JSONResponse(
-                status_code=503,
-                content={
-                    "error": {
-                        "message": "the configured agent extension is unavailable",
-                        "type": "service_unavailable",
-                    }
-                },
-            )
-        if _extensions(request):
-            return JSONResponse(
-                status_code=404,
-                content={
-                    "error": {
-                        "message": "extension entry not found",
-                        "type": "invalid_request_error",
-                    }
-                },
-            )
-        return JSONResponse(
-            status_code=404,
-            content={
-                "error": {
-                    "message": "agent extensions are not enabled",
-                    "type": "invalid_request_error",
-                }
-            },
-        )
-
+        if resolution["target"]:
+            upstream_request["_ysparr_target"] = resolution["target"]
     if payload.stream:
         job_id = await _manager(request).submit(
             upstream_request,

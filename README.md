@@ -21,7 +21,10 @@ When the Apmatia extension is selected, it contributes the compiled system
 instruction and a preferred model type. It does not expose private agent data,
 edit client messages, or choose an inference backend. Legacy
 `apmatia-agent-{id}` selectors remain accepted. Add `YSPARR_EXTENSION_API_KEY`
-when the extension requires bearer authentication.
+when the extension requires bearer authentication. `YSPARR_EXTENSION_ALLOWED_ROLES`
+controls accepted contribution roles (default: `system,developer`), and
+`YSPARR_EXTENSION_CONTEXT_FAILURE` controls whether context failures are
+`skip` (default) or `fail`.
 
 
 **Ysparr Sends Prompts And Receives Responses.**
@@ -187,6 +190,8 @@ YSPARR_CODING_MODEL
 YSPARR_EXTENSION_BASE_URLS
 YSPARR_MODEL_TYPE_ROUTES
 YSPARR_EXTENSION_API_KEY
+YSPARR_EXTENSION_ALLOWED_ROLES
+YSPARR_EXTENSION_CONTEXT_FAILURE
 YSPARR_AUTH_ENABLED
 YSPARR_ADMIN_API_KEY
 YSPARR_DATABASE_PATH
@@ -215,9 +220,20 @@ To expose explicitly published Apmatia agents as virtual OpenAI models, set
 Ysparr reads the versioned, read-only catalog and resolves the selected entry at
 request time. Agent names are used as model IDs; legacy `apmatia-agent-{id}` IDs
 remain accepted. If an extension cannot be reached, Ysparr does not reuse stale
-catalog data. Set `YSPARR_EXTENSION_API_KEY` when the extension requires bearer
-authentication. Map extension target metadata to upstream model IDs with
+catalog data. A selected extension entry is authoritative: if its current
+resolution fails or disappears, Ysparr returns an explicit error instead of
+silently sending the request to the upstream model. Multiple extensions are
+checked in the configured order; the first owner of a selector wins, and
+duplicate selectors within one catalog are rejected. Set
+`YSPARR_EXTENSION_API_KEY` when the extension requires bearer authentication.
+Map extension target metadata to upstream model IDs with
 `YSPARR_MODEL_TYPE_ROUTES`, for example:
+
+An entry may set `applies_to: "all"` to act as an optional context extension
+for ordinary upstream selections. It receives a read-only request copy and
+may contribute only `developer` messages; it cannot select or replace the
+upstream backend. Context failures are skipped, while failures for a selected
+virtual model are returned explicitly.
 
 ```sh
 export YSPARR_MODEL_TYPE_ROUTES='{"openai_compatible":"MiniMax"}'

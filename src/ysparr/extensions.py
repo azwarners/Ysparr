@@ -21,10 +21,22 @@ class ExtensionClient:
 
     CONTRACT_VERSION = "1"
 
-    def __init__(self, base_url: str, api_key: str | None = None, transport=None) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        api_key: str | None = None,
+        transport=None,
+        *,
+        allowed_roles: frozenset[str] | None = None,
+        context_failure: str = "skip",
+    ) -> None:
+        if context_failure not in {"skip", "fail"}:
+            raise ValueError("context_failure must be 'skip' or 'fail'")
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.transport = transport
+        self.allowed_roles = allowed_roles or frozenset({"system", "developer"})
+        self.context_failure = context_failure
 
     async def _request(
         self,
@@ -64,6 +76,9 @@ class ExtensionClient:
         valid = [entry for entry in entries if isinstance(entry, dict) and _valid_entry(entry)]
         if len(valid) != len(entries):
             raise ExtensionUnavailable("extension returned an invalid catalog entry")
+        selectors = [selector for entry in valid for selector in (entry["id"], *entry["aliases"])]
+        if len(selectors) != len(set(selectors)):
+            raise ExtensionUnavailable("extension returned colliding catalog selectors")
         return valid
 
     async def resolve(self, model: str, request: dict[str, Any]) -> dict[str, Any]:
@@ -86,6 +101,8 @@ class ExtensionClient:
             not _valid_contribution(item) for item in contributions
         ):
             raise ExtensionUnavailable("extension returned invalid contributions")
+        if any(item["role"] not in self.allowed_roles for item in contributions):
+            raise ExtensionUnavailable("extension returned an unauthorized contribution role")
         target = result.get("target", {})
         if not isinstance(target, dict) or not _valid_target(target):
             raise ExtensionUnavailable("extension returned invalid target metadata")
@@ -95,13 +112,22 @@ class ExtensionClient:
 def matching_entry(entries: list[dict[str, Any]], model: str) -> dict[str, Any] | None:
     """Return the first catalog entry matching a primary ID or alias."""
     for entry in entries:
+        if entry.get("applies_to", "selector") != "selector":
+            continue
         if model == entry["id"] or model in entry["aliases"]:
             return entry
     return None
 
 
+def matching_context_entry(entries: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Return the first entry that opts into ordinary-request enrichment."""
+    return next((entry for entry in entries if entry.get("applies_to") == "all"), None)
+
+
 def _valid_entry(entry: dict[str, Any]) -> bool:
     aliases = entry.get("aliases", [])
+    applies_to = entry.get("applies_to", "selector")
+    target = entry.get("target", {})
     return (
         isinstance(entry.get("id"), str)
         and bool(entry["id"])
@@ -111,10 +137,24 @@ def _valid_entry(entry: dict[str, Any]) -> bool:
         and all(isinstance(alias, str) and alias for alias in aliases)
         and isinstance(entry.get("owned_by"), str)
         and bool(entry["owned_by"])
-        and isinstance(entry.get("target"), dict)
-        and _valid_target(entry["target"])
-        and isinstance(entry["target"].get("preferred_model_type"), str)
-        and bool(entry["target"]["preferred_model_type"].strip())
+        and applies_to in {"selector", "all"}
+        and isinstance(target, dict)
+        and _valid_target(target)
+        and (
+            applies_to == "all"
+            or (
+                isinstance(target.get("preferred_model_type"), str)
+                and bool(target["preferred_model_type"].strip())
+            )
+        )
+        and set(entry) <= {
+            "id",
+            "name",
+            "aliases",
+            "owned_by",
+            "target",
+            "applies_to",
+        }
     )
 
 

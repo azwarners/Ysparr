@@ -19,7 +19,9 @@ def test_environment_overrides() -> None:
             "YSPARR_CODING_BASE_URL": "https://coding.example/v1/",
             "YSPARR_CODING_MODEL": "code-main",
             "YSPARR_EXTENSION_BASE_URLS": "http://extension:8001/, http://extension-2:8002/",
-            "YSPARR_EXTENSION_API_KEY": "extension-secret",
+        "YSPARR_EXTENSION_API_KEY": "extension-secret",
+        "YSPARR_EXTENSION_ALLOWED_ROLES": "system,developer",
+        "YSPARR_EXTENSION_CONTEXT_FAILURE": "fail",
             "YSPARR_MODEL_TYPE_ROUTES": '{"openai_compatible": "chat-main"}',
             "YSPARR_DATABASE_PATH": "/tmp/ysparr-test.sqlite3",
             "YSPARR_RETENTION_COMPLETED": "2h",
@@ -36,6 +38,8 @@ def test_environment_overrides() -> None:
     assert config.coding_model == "code-main"
     assert config.extension_base_urls == ("http://extension:8001", "http://extension-2:8002")
     assert config.extension_api_key == "extension-secret"
+    assert config.extension_allowed_roles == ("system", "developer")
+    assert config.extension_context_failure == "fail"
     assert config.model_type_routes == {"openai_compatible": "chat-main"}
     assert config.database_path == "/tmp/ysparr-test.sqlite3"
     assert config.completed_retention_seconds == 7200

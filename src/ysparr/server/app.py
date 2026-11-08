@@ -129,7 +129,12 @@ def create_app(
     app = FastAPI(title="Ysparr", version=__version__, lifespan=lifespan)
     app.state.config = runtime_config
     app.state.extension_clients = [
-        ExtensionClient(url, runtime_config.extension_api_key)
+        ExtensionClient(
+            url,
+            runtime_config.extension_api_key,
+            allowed_roles=frozenset(runtime_config.extension_allowed_roles),
+            context_failure=runtime_config.extension_context_failure,
+        )
         for url in runtime_config.extension_base_urls
     ]
     app.state.adapter = runtime_adapter
@@ -141,7 +146,7 @@ def create_app(
 
     @app.get("/health")
     @app.get("/ysparr/v1/status")
-    def health() -> dict[str, str]:
+    async def health() -> dict[str, str]:
         return {"service": "ysparr", "status": "ok", "version": __version__}
 
     return app

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import json
 import os
@@ -110,7 +109,12 @@ class SQLiteJobStore:
             return function(*args, **kwargs)
 
     async def _run(self, function: Callable[..., T], *args: Any, **kwargs: Any) -> T:
-        return await asyncio.to_thread(self._call, function, *args, **kwargs)
+        # SQLite operations are serialized by the connection lock. Keeping
+        # this small store on the owning event-loop thread avoids orphaned
+        # asyncio default-executor workers when an ASGI test client creates
+        # and closes short-lived event loops. The lock still protects the
+        # connection when the service is driven by multiple tasks.
+        return self._call(function, *args, **kwargs)
 
     def _create(self, job_id: str, request: dict[str, Any], principal_id: str | None = None) -> JobRecord:
         timestamp = _now()
@@ -287,4 +291,4 @@ class SQLiteJobStore:
         return await self._run(self._expire, completed, failed, orphaned)
 
     async def close(self) -> None:
-        await asyncio.to_thread(self._connection.close)
+        self._connection.close()
