@@ -1,4 +1,6 @@
 import asyncio
+import hashlib
+import hmac
 import json
 from collections.abc import AsyncIterator
 from typing import Any
@@ -127,6 +129,159 @@ def test_generic_extension_adds_catalog_and_system_contribution(tmp_path) -> Non
     }
     assert adapter.completed[0]["model"] == "apmatia-agent-12"
     assert adapter.completed[0]["_ysparr_target"] == {"preferred_model_type": "openai_compatible"}
+
+
+def test_guessed_apmatia_agent_id_fails_closed(tmp_path) -> None:
+    app = _extension_app(tmp_path, FakeAdapter(), _extension_handler)
+    response = request(
+        app,
+        "POST",
+        "/v1/chat/completions",
+        json={"model": "apmatia-agent-999", "messages": [{"role": "user", "content": "hello"}]},
+    )
+    assert response.status_code == 404
+
+
+def test_extension_selector_cannot_shadow_an_upstream_model(tmp_path) -> None:
+    calls = []
+
+    def handler(request):
+        calls.append(request.method)
+        if request.method == "GET":
+            return httpx.Response(
+                200,
+                json={
+                    "version": "1",
+                    "entries": [
+                        {
+                            "id": "fake-model",
+                            "name": "private agent",
+                            "aliases": [],
+                            "owned_by": "apmatia",
+                            "target": {"preferred_model_type": "openai_compatible"},
+                        }
+                    ],
+                },
+            )
+        raise AssertionError("the colliding extension selector was invoked")
+
+    adapter = FakeAdapter()
+    app = _extension_app(tmp_path, adapter, handler)
+    response = request(
+        app,
+        "POST",
+        "/v1/chat/completions",
+        json={"model": "fake-model", "messages": [{"role": "user", "content": "hello"}]},
+    )
+    assert response.status_code == 200
+    assert calls == ["GET"]
+    assert adapter.completed[0]["model"] == "fake-model"
+
+
+def test_two_user_private_agent_integration_and_public_key_boundary(tmp_path) -> None:
+    service_key = "service-secret"
+    private_by_principal: dict[str, str] = {}
+
+    def handler(extension_request):
+        supplied = extension_request.headers.get("authorization", "")
+        assert supplied == f"Bearer {service_key}"
+        principal = extension_request.headers.get("x-ysparr-principal")
+        signature = extension_request.headers.get("x-ysparr-principal-signature")
+        if principal is not None:
+            expected = hmac.new(service_key.encode(), principal.encode(), hashlib.sha256).hexdigest()
+            assert hmac.compare_digest(signature or "", expected)
+        private_selector = private_by_principal.get(principal or "")
+        entries = [
+            {
+                "id": "Public starter",
+                "name": "Public starter",
+                "aliases": [],
+                "owned_by": "apmatia",
+                "target": {"preferred_model_type": "openai_compatible"},
+            }
+        ]
+        if private_selector:
+            entries.append(
+                {
+                    "id": private_selector,
+                    "name": private_selector,
+                    "aliases": [],
+                    "owned_by": "apmatia",
+                    "target": {"preferred_model_type": "openai_compatible"},
+                }
+            )
+        if extension_request.method == "GET":
+            return httpx.Response(200, json={"version": "1", "entries": entries})
+        payload = json.loads(extension_request.content)
+        if payload["model"] not in {entry["id"] for entry in entries}:
+            return httpx.Response(404)
+        return httpx.Response(
+            200,
+            json={
+                "version": "1",
+                "contributions": [{"role": "system", "content": f"Instructions for {payload['model']}"}],
+                "target": {"preferred_model_type": "openai_compatible"},
+            },
+        )
+
+    config = Config(
+        database_path=str(tmp_path / "jobs.sqlite3"),
+        auth_enabled=True,
+        extension_base_urls=("http://extension",),
+        extension_api_key=service_key,
+    )
+    adapter = FakeAdapter()
+    app = create_app(config, adapter)
+    app.state.extension_clients = [
+        ExtensionClient("http://extension", service_key, transport=httpx.MockTransport(handler))
+    ]
+    identities = app.state.identity_store
+    user_a = identities.create_user("user-a")
+    user_b = identities.create_user("user-b")
+    key_a, _ = identities.create_key(user_a, "personal-a", ("*",), ("chat",))
+    key_b, _ = identities.create_key(user_b, "personal-b", ("*",), ("chat",))
+    public_key, _ = identities.create_key(user_b, "public", ("fake-model", "Public starter"), ("chat",))
+    private_by_principal[user_a] = "apmatia-agent-8"
+    private_by_principal[user_b] = "apmatia-agent-9"
+
+    def headers(key: str) -> dict[str, str]:
+        return {"Authorization": f"Bearer {key}"}
+
+    own = request(
+        app,
+        "POST",
+        "/v1/chat/completions",
+        headers=headers(key_a),
+        json={"model": "apmatia-agent-8", "messages": [{"role": "user", "content": "hello"}]},
+    )
+    cross_user = request(
+        app,
+        "POST",
+        "/v1/chat/completions",
+        headers=headers(key_b),
+        json={"model": "apmatia-agent-8", "messages": [{"role": "user", "content": "hello"}]},
+    )
+    public_models = request(app, "GET", "/v1/models", headers=headers(public_key))
+    public_private = request(
+        app,
+        "POST",
+        "/v1/chat/completions",
+        headers=headers(public_key),
+        json={"model": "apmatia-agent-8", "messages": [{"role": "user", "content": "hello"}]},
+    )
+    unknown_private = request(
+        app,
+        "POST",
+        "/v1/chat/completions",
+        headers=headers(key_b),
+        json={"model": "apmatia-agent-999", "messages": [{"role": "user", "content": "hello"}]},
+    )
+    assert own.status_code == 200
+    assert cross_user.status_code == 404
+    assert public_models.status_code == 200
+    assert {model["id"] for model in public_models.json()["data"]} == {"fake-model", "Public starter"}
+    assert public_private.status_code == 403
+    assert unknown_private.status_code == 404
 
 
 def test_generic_extension_stream_uses_existing_job_path(tmp_path) -> None:
@@ -280,7 +435,7 @@ def test_extension_collision_uses_first_registered_owner(tmp_path) -> None:
     assert adapter.completed[0]["messages"][0]["content"] == "first"
 
 
-def test_unknown_legacy_selector_remains_an_ordinary_upstream_model(tmp_path) -> None:
+def test_guessed_legacy_selector_fails_closed_when_extension_is_unavailable(tmp_path) -> None:
     adapter = FakeAdapter()
     app = _extension_app(tmp_path, adapter, lambda request: httpx.Response(503))
     response = request(
@@ -289,8 +444,21 @@ def test_unknown_legacy_selector_remains_an_ordinary_upstream_model(tmp_path) ->
         "/v1/chat/completions",
         json={"model": "apmatia-agent-99", "messages": [{"role": "user", "content": "hello"}]},
     )
+    assert response.status_code == 404
+    assert adapter.completed == []
+
+
+def test_ordinary_model_remains_available_when_extension_is_unavailable(tmp_path) -> None:
+    adapter = FakeAdapter()
+    app = _extension_app(tmp_path, adapter, lambda request: httpx.Response(503))
+    response = request(
+        app,
+        "POST",
+        "/v1/chat/completions",
+        json={"model": "fake-model", "messages": [{"role": "user", "content": "hello"}]},
+    )
     assert response.status_code == 200
-    assert adapter.completed[0]["model"] == "apmatia-agent-99"
+    assert adapter.completed[0]["model"] == "fake-model"
 
 
 def test_selected_extension_failure_does_not_fall_back_to_upstream(tmp_path) -> None:

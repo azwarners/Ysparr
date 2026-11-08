@@ -26,6 +26,13 @@ controls accepted contribution roles (default: `system,developer`), and
 `YSPARR_EXTENSION_CONTEXT_FAILURE` controls whether context failures are
 `skip` (default) or `fail`.
 
+When Ysparr authentication is enabled, the extension client also sends the
+authenticated Ysparr user's stable internal ID with an HMAC-SHA256 proof made
+from `YSPARR_EXTENSION_API_KEY`. Clients cannot supply or override these
+headers. Apmatia may map those IDs to its own user IDs using its explicit
+`APMATIA_YSPARR_PRINCIPAL_MAP` JSON configuration; unmapped principals receive
+only the public starter catalog.
+
 
 **Ysparr Sends Prompts And Receives Responses.**
 

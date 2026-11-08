@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from copy import deepcopy
 from typing import Any
 
@@ -45,6 +46,14 @@ def _extensions(request: Request) -> list[ExtensionClient]:
     return list(getattr(request.app.state, "extension_clients", []))
 
 
+def _principal_id(principal: Principal | None) -> str | None:
+    return principal.id if principal is not None else None
+
+
+def _is_reserved_apmatia_selector(model: str) -> bool:
+    return re.fullmatch(r"apmatia-agent-[0-9]+", model) is not None
+
+
 def _error(exc: UpstreamError) -> JSONResponse:
     return JSONResponse(
         status_code=exc.status_code,
@@ -65,7 +74,7 @@ async def models(
     existing = {model.get("id") for model in data if isinstance(model, dict)}
     for extension in _extensions(request):
         try:
-            entries = await extension.catalog()
+            entries = await extension.catalog(_principal_id(principal))
         except ExtensionUnavailable:
             # Discovery is optional. Never publish stale catalog data.
             continue
@@ -96,6 +105,7 @@ async def _resolve_extension(
     request: Request,
     model: str,
     upstream_request: dict[str, Any],
+    principal: Principal | None,
 ) -> tuple[dict[str, Any] | None, bool, bool, bool]:
     """Resolve one selector using configured extensions in operator order.
 
@@ -116,7 +126,7 @@ async def _resolve_extension(
         if matched:
             break
         try:
-            entries = await extension.catalog()
+            entries = await extension.catalog(_principal_id(principal))
         except ExtensionUnavailable:
             saw_unavailable_catalog = True
             continue
@@ -125,7 +135,7 @@ async def _resolve_extension(
         if context_entry is not None:
             try:
                 context_resolution = await extension.resolve(
-                    model, deepcopy(upstream_request)
+                    model, deepcopy(upstream_request), _principal_id(principal)
                 )
                 if any(item["role"] != "developer" for item in context_resolution["contributions"]):
                     raise ExtensionUnavailable("context extensions may only contribute developer messages")
@@ -136,11 +146,26 @@ async def _resolve_extension(
                 if extension.context_failure == "fail":
                     raise
                 pass
-        if not matched and matching_entry(entries, model) is not None:
+        extension_entry = matching_entry(entries, model)
+        if not matched and extension_entry is not None:
+            # Discovery gives ordinary upstream IDs precedence over extension
+            # IDs. Check that again only after an extension match so ordinary
+            # requests preserve their existing single-dispatch behavior.
+            try:
+                upstream_models = await _adapter(request).list_models()
+            except UpstreamError as exc:
+                raise ExtensionUnavailable("could not validate the extension selector") from exc
+            upstream_model_ids = {
+                str(upstream_model.get("id"))
+                for upstream_model in upstream_models.get("data", [])
+                if isinstance(upstream_model, dict) and upstream_model.get("id") is not None
+            }
+            if model in upstream_model_ids:
+                continue
             matched = True
             try:
                 selected_resolution = await extension.resolve(
-                    model, deepcopy(upstream_request)
+                    model, deepcopy(upstream_request), _principal_id(principal)
                 )
             except ExtensionEntryNotFound:
                 # The catalog was authoritative when it matched. Do not silently
@@ -183,7 +208,7 @@ async def chat_completions(
     upstream_request = payload.model_dump(exclude_none=True)
     try:
         resolution, saw_catalog, saw_unavailable_catalog, matched = await _resolve_extension(
-            request, payload.model, upstream_request
+            request, payload.model, upstream_request, principal
         )
     except ExtensionUnavailable:
         return JSONResponse(
@@ -201,6 +226,16 @@ async def chat_completions(
             content={
                 "error": {
                     "message": "extension entry is no longer available",
+                    "type": "invalid_request_error",
+                }
+            },
+        )
+    if not matched and _is_reserved_apmatia_selector(payload.model):
+        return JSONResponse(
+            status_code=404,
+            content={
+                "error": {
+                    "message": "extension entry is not available",
                     "type": "invalid_request_error",
                 }
             },

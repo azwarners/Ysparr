@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import hashlib
+import hmac
 from typing import Any
 
 import httpx
@@ -45,8 +47,14 @@ class ExtensionClient:
         payload: dict[str, Any] | None = None,
         *,
         missing_entry: bool = False,
+        principal_id: str | None = None,
     ) -> Any:
         headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
+        if principal_id is not None and self.api_key:
+            headers["X-Ysparr-Principal"] = principal_id
+            headers["X-Ysparr-Principal-Signature"] = hmac.new(
+                self.api_key.encode(), principal_id.encode(), hashlib.sha256
+            ).hexdigest()
         try:
             async with httpx.AsyncClient(timeout=5, transport=self.transport) as client:
                 response = await client.request(
@@ -66,8 +74,8 @@ class ExtensionClient:
         except ValueError as exc:
             raise ExtensionUnavailable("extension returned invalid JSON") from exc
 
-    async def catalog(self) -> list[dict[str, Any]]:
-        result = await self._request("GET", "/api/public/ysparr/catalog")
+    async def catalog(self, principal_id: str | None = None) -> list[dict[str, Any]]:
+        result = await self._request("GET", "/api/public/ysparr/catalog", principal_id=principal_id)
         if not isinstance(result, dict) or result.get("version") != self.CONTRACT_VERSION:
             raise ExtensionUnavailable("extension returned an unsupported catalog contract")
         entries = result.get("entries")
@@ -81,7 +89,9 @@ class ExtensionClient:
             raise ExtensionUnavailable("extension returned colliding catalog selectors")
         return valid
 
-    async def resolve(self, model: str, request: dict[str, Any]) -> dict[str, Any]:
+    async def resolve(
+        self, model: str, request: dict[str, Any], principal_id: str | None = None
+    ) -> dict[str, Any]:
         result = await self._request(
             "POST",
             "/api/public/ysparr/resolve",
@@ -93,6 +103,7 @@ class ExtensionClient:
                 "request": deepcopy(request),
             },
             missing_entry=True,
+            principal_id=principal_id,
         )
         if not isinstance(result, dict) or result.get("version") != self.CONTRACT_VERSION:
             raise ExtensionUnavailable("extension returned an unsupported resolution contract")
