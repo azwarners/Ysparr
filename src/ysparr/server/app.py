@@ -1,6 +1,9 @@
 """FastAPI application for the Ysparr service."""
 
 from contextlib import asynccontextmanager
+import json
+from collections.abc import AsyncIterator, Callable
+from copy import deepcopy
 
 from fastapi import FastAPI
 
@@ -15,6 +18,139 @@ from ysparr.security import IdentityStore
 from ysparr.upstream import OpenAIHTTPAdapter, UpstreamAdapter
 from ysparr.upstream.base import UpstreamError
 from ysparr.extensions import ExtensionClient
+from ysparr.extensions import ExtensionUnavailable
+
+
+class BoundedToolAdapter:
+    """Run the small, authenticated Apmatia memory-tool loop around an upstream."""
+
+    MAX_TOOL_ROUNDS = 2
+
+    def __init__(self, upstream: UpstreamAdapter, extensions: Callable[[], list[ExtensionClient]]) -> None:
+        self.upstream = upstream
+        self.extensions = extensions
+
+    async def list_models(self):
+        return await self.upstream.list_models()
+
+    @staticmethod
+    def _context(request: dict) -> tuple[dict, dict | None]:
+        copied = deepcopy(request)
+        return copied, copied.pop("_ysparr_tool_context", None)
+
+    @staticmethod
+    def _calls(response: dict) -> list[dict]:
+        choices = response.get("choices")
+        if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+            return []
+        message = choices[0].get("message")
+        calls = message.get("tool_calls") if isinstance(message, dict) else None
+        return calls if isinstance(calls, list) else []
+
+    async def complete(self, request: dict) -> dict:
+        outbound, context = self._context(request)
+        if not context:
+            return await self.upstream.complete(outbound)
+        messages = list(outbound.get("messages", []))
+        for round_number in range(self.MAX_TOOL_ROUNDS + 1):
+            outbound["messages"] = messages
+            outbound["tools"] = context["tools"]
+            response = await self.upstream.complete(outbound)
+            calls = self._calls(response)
+            if not calls:
+                return response
+            if round_number >= self.MAX_TOOL_ROUNDS:
+                raise UpstreamError("bounded tool-call round limit exceeded", 422)
+            assistant = response.get("choices", [{}])[0].get("message")
+            if not isinstance(assistant, dict):
+                raise UpstreamError("upstream returned an invalid tool-call message", 502)
+            messages.append(assistant)
+            for call in calls:
+                result = await self._invoke(context, call)
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": call.get("id", ""),
+                    "content": json.dumps(result, separators=(",", ":")),
+                })
+        raise UpstreamError("bounded tool-call round limit exceeded", 422)
+
+    async def _invoke(self, context: dict, call: dict) -> dict:
+        function = call.get("function")
+        if not isinstance(function, dict) or not isinstance(function.get("name"), str):
+            raise UpstreamError("upstream returned an invalid tool call", 502)
+        try:
+            arguments = json.loads(function.get("arguments", "{}"))
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise UpstreamError("upstream returned invalid tool arguments", 422) from exc
+        if not isinstance(arguments, dict):
+            raise UpstreamError("upstream returned invalid tool arguments", 422)
+        extensions = self.extensions()
+        index = context.get("extension_index")
+        if not isinstance(index, int) or index < 0 or index >= len(extensions):
+            raise UpstreamError("authorized tool endpoint is unavailable", 503)
+        try:
+            return await extensions[index].invoke_tool(
+                context["agent_id"], function["name"], arguments,
+                call_id=call.get("id"), principal_id=context.get("principal_id"),
+            )
+        except ExtensionUnavailable as exc:
+            raise UpstreamError(str(exc), 503) from exc
+
+    async def _buffer_stream(self, request: dict) -> tuple[list[bytes], dict]:
+        chunks: list[bytes] = []
+        calls: dict[int, dict] = {}
+        buffer = ""
+        async for chunk in self.upstream.stream(request):
+            chunks.append(chunk)
+            buffer += chunk.decode("utf-8", errors="replace")
+            while "\n\n" in buffer:
+                event, buffer = buffer.split("\n\n", 1)
+                for line in event.splitlines():
+                    if not line.startswith("data: ") or line[6:] == "[DONE]":
+                        continue
+                    try:
+                        payload = json.loads(line[6:])
+                    except json.JSONDecodeError:
+                        continue
+                    choices = payload.get("choices") if isinstance(payload, dict) else None
+                    delta = choices[0].get("delta") if choices and isinstance(choices[0], dict) else None
+                    for tool_call in (delta or {}).get("tool_calls", []) if isinstance(delta, dict) else []:
+                        if not isinstance(tool_call, dict):
+                            continue
+                        index = int(tool_call.get("index", 0))
+                        current = calls.setdefault(index, {"id": "", "type": "function", "function": {"name": "", "arguments": ""}})
+                        current["id"] += str(tool_call.get("id") or "")
+                        function = tool_call.get("function") or {}
+                        current["function"]["name"] += str(function.get("name") or "")
+                        current["function"]["arguments"] += str(function.get("arguments") or "")
+        return chunks, {"tool_calls": [calls[index] for index in sorted(calls)]}
+
+    def stream(self, request: dict) -> AsyncIterator[bytes]:
+        return self._stream(request)
+
+    async def _stream(self, request: dict) -> AsyncIterator[bytes]:
+        outbound, context = self._context(request)
+        if not context:
+            async for chunk in self.upstream.stream(outbound):
+                yield chunk
+            return
+        messages = list(outbound.get("messages", []))
+        for round_number in range(self.MAX_TOOL_ROUNDS + 1):
+            outbound["messages"] = messages
+            outbound["tools"] = context["tools"]
+            chunks, assembled = await self._buffer_stream(outbound)
+            calls = assembled["tool_calls"]
+            if not calls:
+                for chunk in chunks:
+                    yield chunk
+                return
+            if round_number >= self.MAX_TOOL_ROUNDS:
+                raise UpstreamError("bounded tool-call round limit exceeded", 422)
+            messages.append({"role": "assistant", "tool_calls": calls})
+            for call in calls:
+                result = await self._invoke(context, call)
+                messages.append({"role": "tool", "tool_call_id": call["id"], "content": json.dumps(result)})
+        raise UpstreamError("bounded tool-call round limit exceeded", 422)
 
 
 class RoutedUpstreamAdapter:
@@ -106,13 +242,7 @@ def create_app(
     runtime_adapter = adapter or RoutedUpstreamAdapter(runtime_config)
     runtime_store = store or SQLiteJobStore(runtime_config.database_path)
     identity_store = IdentityStore(runtime_config.database_path)
-    runtime_manager = JobManager(
-        runtime_store,
-        runtime_adapter,
-        runtime_config.completed_retention_seconds,
-        runtime_config.failed_retention_seconds,
-        runtime_config.orphaned_retention_seconds,
-    )
+    extension_clients: list[ExtensionClient] = []
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -128,7 +258,7 @@ def create_app(
 
     app = FastAPI(title="Ysparr", version=__version__, lifespan=lifespan)
     app.state.config = runtime_config
-    app.state.extension_clients = [
+    extension_clients.extend([
         ExtensionClient(
             url,
             runtime_config.extension_api_key,
@@ -136,7 +266,16 @@ def create_app(
             context_failure=runtime_config.extension_context_failure,
         )
         for url in runtime_config.extension_base_urls
-    ]
+    ])
+    app.state.extension_clients = extension_clients
+    runtime_adapter = BoundedToolAdapter(runtime_adapter, lambda: app.state.extension_clients)
+    runtime_manager = JobManager(
+        runtime_store,
+        runtime_adapter,
+        runtime_config.completed_retention_seconds,
+        runtime_config.failed_retention_seconds,
+        runtime_config.orphaned_retention_seconds,
+    )
     app.state.adapter = runtime_adapter
     app.state.job_store = runtime_store
     app.state.identity_store = identity_store

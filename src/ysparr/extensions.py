@@ -119,6 +119,52 @@ class ExtensionClient:
             raise ExtensionUnavailable("extension returned invalid target metadata")
         return {"contributions": contributions, "target": target}
 
+    async def tools(self, agent_id: int, principal_id: str | None = None) -> list[dict[str, Any]]:
+        result = await self._request(
+            "GET", f"/api/public/ysparr/agents/{agent_id}/tools", principal_id=principal_id
+        )
+        if not isinstance(result, dict) or result.get("version") != self.CONTRACT_VERSION:
+            raise ExtensionUnavailable("extension returned an unsupported tool contract")
+        if result.get("agent_id") != agent_id or not isinstance(result.get("tools"), list):
+            raise ExtensionUnavailable("extension returned an invalid tool catalog")
+        definitions: list[dict[str, Any]] = []
+        for tool in result["tools"]:
+            if not isinstance(tool, dict) or tool.get("name") not in {"memory.recall", "memory.save"}:
+                raise ExtensionUnavailable("extension returned an unauthorized tool")
+            schema = tool.get("input_schema")
+            if not isinstance(schema, dict):
+                raise ExtensionUnavailable("extension returned an invalid tool schema")
+            definitions.append({
+                "type": "function",
+                "function": {
+                    "name": tool["name"],
+                    "description": str(tool.get("description") or ""),
+                    "parameters": deepcopy(schema),
+                },
+            })
+        return definitions
+
+    async def invoke_tool(
+        self,
+        agent_id: int,
+        tool_name: str,
+        arguments: dict[str, Any],
+        *,
+        call_id: str | None = None,
+        principal_id: str | None = None,
+    ) -> dict[str, Any]:
+        if tool_name not in {"memory.recall", "memory.save"}:
+            raise ExtensionUnavailable("tool is not permitted for this extension")
+        result = await self._request(
+            "POST",
+            f"/api/public/ysparr/agents/{agent_id}/tools/{tool_name}",
+            {"arguments": arguments, "call_id": call_id, "approval_granted": False},
+            principal_id=principal_id,
+        )
+        if not isinstance(result, dict) or not isinstance(result.get("status"), str):
+            raise ExtensionUnavailable("extension returned an invalid tool result")
+        return result
+
 
 def matching_entry(entries: list[dict[str, Any]], model: str) -> dict[str, Any] | None:
     """Return the first catalog entry matching a primary ID or alias."""

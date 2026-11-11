@@ -128,6 +128,51 @@ def test_generic_extension_adds_catalog_and_system_contribution(tmp_path) -> Non
         "content": "Compiled Luna instructions.",
     }
     assert adapter.completed[0]["model"] == "apmatia-agent-12"
+
+
+def test_private_agent_tool_call_is_bounded_and_returned_to_upstream(tmp_path) -> None:
+    class ToolAdapter(FakeAdapter):
+        async def complete(self, request):
+            self.completed.append(request)
+            if len(self.completed) == 1:
+                return {
+                    "id": "tool-call",
+                    "choices": [{"message": {"role": "assistant", "tool_calls": [{
+                        "id": "call-1",
+                        "type": "function",
+                        "function": {"name": "memory.recall", "arguments": '{"query":"hello"}'},
+                    }]}}],
+                }
+            return {"id": "final", "choices": [{"message": {"role": "assistant", "content": "done"}}]}
+
+    def handler(extension_request):
+        path = extension_request.url.path
+        if path.endswith("/catalog"):
+            return httpx.Response(200, json={"version": "1", "entries": [{
+                "id": "apmatia-agent-12", "name": "private", "aliases": [],
+                "owned_by": "apmatia", "target": {"preferred_model_type": "openai_compatible"},
+            }]})
+        if path.endswith("/tools"):
+            return httpx.Response(200, json={"version": "1", "agent_id": 12, "tools": [{
+                "name": "memory.recall", "description": "recall", "input_schema": {"type": "object"},
+            }]})
+        if path.endswith("/memory.recall"):
+            return httpx.Response(200, json={"call_id": "call-1", "status": "success", "result": {"matches": []}})
+        return httpx.Response(200, json={
+            "version": "1", "contributions": [{"role": "system", "content": "private"}],
+            "target": {"preferred_model_type": "openai_compatible"},
+        })
+
+    adapter = ToolAdapter()
+    app = _extension_app(tmp_path, adapter, handler)
+    response = request(app, "POST", "/v1/chat/completions", json={
+        "model": "apmatia-agent-12", "messages": [{"role": "user", "content": "hello"}],
+    })
+    assert response.status_code == 200
+    assert response.json()["choices"][0]["message"]["content"] == "done"
+    assert len(adapter.completed) == 2
+    assert adapter.completed[0]["tools"][0]["function"]["name"] == "memory.recall"
+    assert adapter.completed[1]["messages"][-1]["role"] == "tool"
     assert adapter.completed[0]["_ysparr_target"] == {"preferred_model_type": "openai_compatible"}
 
 
@@ -210,6 +255,9 @@ def test_two_user_private_agent_integration_and_public_key_boundary(tmp_path) ->
                     "target": {"preferred_model_type": "openai_compatible"},
                 }
             )
+        if extension_request.url.path.startswith("/api/public/ysparr/agents/"):
+            agent_id = int(extension_request.url.path.split("/")[-2])
+            return httpx.Response(200, json={"version": "1", "agent_id": agent_id, "tools": []})
         if extension_request.method == "GET":
             return httpx.Response(200, json={"version": "1", "entries": entries})
         payload = json.loads(extension_request.content)

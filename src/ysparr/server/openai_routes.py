@@ -118,7 +118,9 @@ async def _resolve_extension(
     matched = False
     context_contributions: list[dict[str, Any]] = []
     selected_resolution: dict[str, Any] | None = None
-    for extension in _extensions(request):
+    selected_extension_index: int | None = None
+    private_agent_id: int | None = None
+    for extension_index, extension in enumerate(_extensions(request)):
         # Once a selector owner is found, later registrations must not even
         # receive a catalog request for it. This makes collision ownership a
         # real trust boundary, while ordinary models can still collect context
@@ -163,6 +165,11 @@ async def _resolve_extension(
             if model in upstream_model_ids:
                 continue
             matched = True
+            selected_extension_index = extension_index
+            if extension_entry.get("id") == model:
+                private_match = re.fullmatch(r"apmatia-agent-(\d+)", model)
+                if private_match:
+                    private_agent_id = int(private_match.group(1))
             try:
                 selected_resolution = await extension.resolve(
                     model, deepcopy(upstream_request), _principal_id(principal)
@@ -184,6 +191,8 @@ async def _resolve_extension(
             *(selected_resolution or {}).get("contributions", []),
         ],
         "target": (selected_resolution or {}).get("target", {}),
+        "extension_index": selected_extension_index,
+        "private_agent_id": private_agent_id,
     }, saw_catalog, saw_unavailable_catalog, matched
 
 
@@ -247,6 +256,23 @@ async def chat_completions(
         ]
         if resolution["target"]:
             upstream_request["_ysparr_target"] = resolution["target"]
+        private_agent_id = resolution.get("private_agent_id")
+        if private_agent_id is not None and resolution.get("extension_index") is not None:
+            try:
+                tools = await _extensions(request)[resolution["extension_index"]].tools(
+                    private_agent_id, _principal_id(principal)
+                )
+            except ExtensionUnavailable:
+                return JSONResponse(
+                    status_code=503,
+                    content={"error": {"message": "authorized tool endpoint is unavailable", "type": "service_unavailable"}},
+                )
+            upstream_request["_ysparr_tool_context"] = {
+                "extension_index": resolution["extension_index"],
+                "agent_id": private_agent_id,
+                "principal_id": _principal_id(principal),
+                "tools": tools,
+            }
     if payload.stream:
         job_id = await _manager(request).submit(
             upstream_request,
