@@ -74,8 +74,6 @@ class Config:
                 or coding.path not in {"", "/", "/v1", "/v1/"}
             ):
                 raise ConfigError("coding_base_url must be an API root URL without credentials, query, or fragment")
-            if self.chat_model == self.coding_model:
-                raise ConfigError("chat_model and coding_model must be different so clients can select each endpoint")
         for extension_url in self.extension_base_urls:
             extension = urlparse(extension_url)
             if extension.scheme not in {"http", "https"} or not extension.netloc:

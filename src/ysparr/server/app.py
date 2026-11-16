@@ -181,7 +181,8 @@ class RoutedUpstreamAdapter:
             models = result.get("data", [])
             if self.chat_model:
                 models = [m for m in models if not isinstance(m, dict) or m.get("id") != self.chat_model]
-                models.insert(0, {"id": self.chat_model, "object": "model", "owned_by": "ysparr-chat"})
+                owner = "ysparr-chat-coding" if self.chat_model == self.coding_model else "ysparr-chat"
+                models.insert(0, {"id": self.chat_model, "object": "model", "owned_by": owner})
             if self.coding_model and not any(isinstance(m, dict) and m.get("id") == self.coding_model for m in models):
                 models.append({"id": self.coding_model, "object": "model", "owned_by": "ysparr-coding"})
             result["data"] = models
@@ -193,7 +194,10 @@ class RoutedUpstreamAdapter:
             preferred = target.get("preferred_model_type")
             if preferred == "coding" and self.coding is not None:
                 return self.coding
-        if self.coding is not None and request.get("model") == self.coding_model:
+        # A shared model ID has no information in the public request that can
+        # distinguish chat from coding. Direct requests use the chat endpoint;
+        # an internal preferred=coding target remains explicit and uses coding.
+        if self.coding is not None and self.coding_model != self.chat_model and request.get("model") == self.coding_model:
             return self.coding
         if self.chat_model and request.get("model") == self.chat_model:
             return self.chat

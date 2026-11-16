@@ -128,6 +128,31 @@ def test_extension_target_routes_preferred_type_to_configured_model() -> None:
     assert "_ysparr_target" not in seen[0]
 
 
+def test_shared_model_id_uses_explicit_target_for_coding() -> None:
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(200, json={"id": "completion", "choices": []})
+
+    adapter = RoutedUpstreamAdapter(
+        Config(
+            upstream_base_url="http://chat.example:4100",
+            chat_model="same-id",
+            coding_base_url="http://coding.example:4200",
+            coding_model="same-id",
+        ),
+        transport=httpx.MockTransport(handler),
+    )
+    asyncio.run(adapter.complete({"model": "same-id", "messages": []}))
+    asyncio.run(adapter.complete({"model": "same-id", "messages": [], "_ysparr_target": {"preferred_model_type": "coding"}}))
+
+    assert seen == [
+        "http://chat.example:4100/v1/chat/completions",
+        "http://coding.example:4200/v1/chat/completions",
+    ]
+
+
 def test_unknown_extension_target_fails_explicitly() -> None:
     adapter = RoutedUpstreamAdapter(
         Config(upstream_base_url="http://chat.example:4100"),

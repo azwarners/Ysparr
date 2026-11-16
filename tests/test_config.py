@@ -73,6 +73,6 @@ def test_coding_endpoint_requires_model() -> None:
         Config(coding_base_url="https://coding.example")
 
 
-def test_chat_and_coding_ids_must_differ() -> None:
-    with pytest.raises(ConfigError, match="different"):
-        Config(chat_model="same", coding_base_url="https://coding.example", coding_model="same")
+def test_chat_and_coding_ids_may_match() -> None:
+    config = Config(chat_model="same", coding_base_url="https://coding.example", coding_model="same")
+    assert config.chat_model == config.coding_model == "same"
